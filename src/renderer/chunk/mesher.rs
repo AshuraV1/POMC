@@ -10,6 +10,7 @@ pub struct ChunkVertex {
     pub position: [f32; 3],
     pub tex_coords: [f32; 2],
     pub light: f32,
+    pub tint: [f32; 3],
 }
 
 impl ChunkVertex {
@@ -17,6 +18,7 @@ impl ChunkVertex {
         0 => Float32x3,
         1 => Float32x2,
         2 => Float32,
+        3 => Float32x3,
     ];
 
     pub fn buffer_layout() -> wgpu::VertexBufferLayout<'static> {
@@ -41,62 +43,68 @@ struct Face {
 }
 
 const FACES: [Face; 6] = [
+    // Top (Y+): viewed from above, CCW
     Face {
         positions: [
-            [0.0, 1.0, 0.0],
-            [1.0, 1.0, 0.0],
-            [1.0, 1.0, 1.0],
             [0.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
         ],
         offset: [0, 1, 0],
         light: 1.0,
     },
+    // Bottom (Y-): viewed from below, CCW
     Face {
         positions: [
-            [0.0, 0.0, 1.0],
-            [1.0, 0.0, 1.0],
-            [1.0, 0.0, 0.0],
             [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0],
         ],
         offset: [0, -1, 0],
         light: 0.5,
     },
+    // North (Z-): viewed from -Z, CCW
     Face {
         positions: [
-            [1.0, 0.0, 0.0],
             [0.0, 0.0, 0.0],
             [0.0, 1.0, 0.0],
             [1.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
         ],
         offset: [0, 0, -1],
         light: 0.7,
     },
+    // South (Z+): viewed from +Z, CCW
     Face {
         positions: [
-            [0.0, 0.0, 1.0],
             [1.0, 0.0, 1.0],
             [1.0, 1.0, 1.0],
             [0.0, 1.0, 1.0],
+            [0.0, 0.0, 1.0],
         ],
         offset: [0, 0, 1],
         light: 0.7,
     },
+    // East (X+): viewed from +X, CCW
     Face {
         positions: [
-            [1.0, 0.0, 1.0],
             [1.0, 0.0, 0.0],
             [1.0, 1.0, 0.0],
             [1.0, 1.0, 1.0],
+            [1.0, 0.0, 1.0],
         ],
         offset: [1, 0, 0],
         light: 0.8,
     },
+    // West (X-): viewed from -X, CCW
     Face {
         positions: [
-            [0.0, 0.0, 0.0],
             [0.0, 0.0, 1.0],
             [0.0, 1.0, 1.0],
             [0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0],
         ],
         offset: [-1, 0, 0],
         light: 0.8,
@@ -111,6 +119,17 @@ fn face_texture(textures: &FaceTextures, face_idx: usize) -> &str {
         3 => textures.south,
         4 => textures.east,
         _ => textures.west,
+    }
+}
+
+const WHITE: [f32; 3] = [1.0, 1.0, 1.0];
+// TODO: Replace hardcoded tint with biome colormap sampling (grass.png/foliage.png)
+const GRASS_TINT: [f32; 3] = [0.486, 0.741, 0.42];
+
+fn texture_tint(name: &str) -> [f32; 3] {
+    match name {
+        "grass_block_top" | "grass_block_side" => GRASS_TINT,
+        _ => WHITE,
     }
 }
 
@@ -144,9 +163,7 @@ pub fn mesh_chunk(
                     None => continue,
                 };
 
-                let fx = bx as f32;
-                let fy = by as f32;
-                let fz = bz as f32;
+                let block_pos = [bx as f32, by as f32, bz as f32];
 
                 for (i, face) in FACES.iter().enumerate() {
                     let neighbor = chunk_store.get_block_state(
@@ -155,8 +172,10 @@ pub fn mesh_chunk(
                         bz + face.offset[2],
                     );
                     if neighbor.is_air() {
-                        let region = atlas.get_region(face_texture(textures, i));
-                        emit_face(&mut vertices, &mut indices, fx, fy, fz, face, region);
+                        let tex_name = face_texture(textures, i);
+                        let region = atlas.get_region(tex_name);
+                        let tint = texture_tint(tex_name);
+                        emit_face(&mut vertices, &mut indices, block_pos, face, region, tint);
                     }
                 }
             }
@@ -173,11 +192,10 @@ pub fn mesh_chunk(
 fn emit_face(
     vertices: &mut Vec<ChunkVertex>,
     indices: &mut Vec<u32>,
-    bx: f32,
-    by: f32,
-    bz: f32,
+    block_pos: [f32; 3],
     face: &Face,
     region: AtlasRegion,
+    tint: [f32; 3],
 ) {
     let base = vertices.len() as u32;
 
@@ -190,9 +208,14 @@ fn emit_face(
 
     for (i, pos) in face.positions.iter().enumerate() {
         vertices.push(ChunkVertex {
-            position: [bx + pos[0], by + pos[1], bz + pos[2]],
+            position: [
+                block_pos[0] + pos[0],
+                block_pos[1] + pos[1],
+                block_pos[2] + pos[2],
+            ],
             tex_coords: uvs[i],
             light: face.light,
+            tint,
         });
     }
 

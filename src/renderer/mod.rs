@@ -100,6 +100,10 @@ impl Renderer {
         self.egui_state.on_window_event(window, event)
     }
 
+    pub fn egui_ctx(&self) -> &egui::Context {
+        &self.egui_ctx
+    }
+
     pub fn update_camera(&mut self, input: &mut InputState) {
         self.camera.update_look(input);
         let uniform = CameraUniform::from_camera(&self.camera);
@@ -135,11 +139,39 @@ impl Renderer {
         self.chunk_pipeline.remove_mesh(pos);
     }
 
+    pub fn clear_chunk_meshes(&mut self) {
+        self.chunk_pipeline.clear_meshes();
+    }
+
     pub fn mesh_chunk(&self, chunk_store: &ChunkStore, pos: ChunkPos) -> ChunkMeshData {
         chunk::mesher::mesh_chunk(chunk_store, pos, &self.registry, &self.atlas)
     }
 
-    pub fn render_world(&mut self) -> Result<(), RendererError> {
+    pub fn render_world(
+        &mut self,
+        window: &Window,
+        hud_fn: impl FnMut(&egui::Context),
+    ) -> Result<(), RendererError> {
+        let raw_input = self.egui_state.take_egui_input(window);
+        let full_output = self.egui_ctx.run(raw_input, hud_fn);
+
+        self.egui_state
+            .handle_platform_output(window, full_output.platform_output);
+
+        let tris = self
+            .egui_ctx
+            .tessellate(full_output.shapes, full_output.pixels_per_point);
+
+        for (id, delta) in &full_output.textures_delta.set {
+            self.egui_renderer
+                .update_texture(&self.ctx.device, &self.ctx.queue, *id, delta);
+        }
+
+        let screen = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [self.ctx.config.width, self.ctx.config.height],
+            pixels_per_point: full_output.pixels_per_point,
+        };
+
         let output = self.ctx.surface.get_current_texture()?;
         let view = output
             .texture
@@ -183,8 +215,43 @@ impl Renderer {
             self.chunk_pipeline.draw(&mut render_pass);
         }
 
-        self.ctx.queue.submit(std::iter::once(encoder.finish()));
+        let hud_commands = self.egui_renderer.update_buffers(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &mut encoder,
+            &tris,
+            &screen,
+        );
+
+        {
+            let mut render_pass = encoder
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("hud_pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                })
+                .forget_lifetime();
+
+            self.egui_renderer.render(&mut render_pass, &tris, &screen);
+        }
+
+        let mut submit: Vec<wgpu::CommandBuffer> = hud_commands;
+        submit.push(encoder.finish());
+        self.ctx.queue.submit(submit);
         output.present();
+
+        for id in &full_output.textures_delta.free {
+            self.egui_renderer.free_texture(id);
+        }
 
         Ok(())
     }

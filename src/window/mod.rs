@@ -15,7 +15,10 @@ use crate::net::NetworkEvent;
 use crate::physics::movement;
 use crate::player::LocalPlayer;
 use crate::renderer::Renderer;
+use crate::ui::chat::ChatState;
+use crate::ui::hud;
 use crate::ui::menu::{MainMenu, MenuAction};
+use crate::ui::pause::{self, PauseAction};
 use crate::world::chunk::ChunkStore;
 use input::InputState;
 
@@ -44,6 +47,7 @@ struct App {
     input: InputState,
     last_frame: Option<Instant>,
     net_events: Option<crossbeam_channel::Receiver<NetworkEvent>>,
+    chat_sender: Option<crossbeam_channel::Sender<String>>,
     chunk_store: ChunkStore,
     assets_dir: PathBuf,
     position_set: bool,
@@ -53,14 +57,21 @@ struct App {
     player: LocalPlayer,
     tick_accumulator: f32,
     prev_player_pos: glam::Vec3,
+    hud_textures: Option<hud::HudTextures>,
+    paused: bool,
+    chat: ChatState,
 }
 
 impl App {
     fn new(
-        net_events: Option<crossbeam_channel::Receiver<NetworkEvent>>,
+        connection: Option<crate::net::connection::ConnectionHandle>,
         assets_dir: PathBuf,
         tokio_rt: Arc<tokio::runtime::Runtime>,
     ) -> Self {
+        let (net_events, chat_sender) = match connection {
+            Some(handle) => (Some(handle.events), Some(handle.chat_tx)),
+            None => (None, None),
+        };
         let state = if net_events.is_some() {
             GameState::InGame
         } else {
@@ -73,6 +84,7 @@ impl App {
             input: InputState::new(),
             last_frame: None,
             net_events,
+            chat_sender,
             chunk_store: ChunkStore::new(8),
             assets_dir,
             position_set: false,
@@ -82,12 +94,18 @@ impl App {
             player: LocalPlayer::new(),
             tick_accumulator: 0.0,
             prev_player_pos: glam::Vec3::ZERO,
+            hud_textures: None,
+            paused: false,
+            chat: ChatState::new(),
         }
     }
 
     fn apply_cursor_grab(&self) {
         let Some(window) = &self.window else { return };
-        let captured = matches!(self.state, GameState::InGame) && self.input.is_cursor_captured();
+        let captured = matches!(self.state, GameState::InGame)
+            && !self.paused
+            && !self.chat.is_open()
+            && self.input.is_cursor_captured();
         if captured {
             let _ = window.set_cursor_grab(CursorGrabMode::Confined);
             window.set_cursor_visible(false);
@@ -105,12 +123,17 @@ impl App {
             access_token: None,
         };
 
-        self.net_events = Some(crate::net::connection::spawn_connection(
-            &self.tokio_rt,
-            connect_args,
-        ));
+        let handle = crate::net::connection::spawn_connection(&self.tokio_rt, connect_args);
+        self.net_events = Some(handle.events);
+        self.chat_sender = Some(handle.chat_tx);
         self.state = GameState::InGame;
         self.apply_cursor_grab();
+    }
+
+    fn send_chat_message(&self, msg: String) {
+        if let Some(tx) = &self.chat_sender {
+            let _ = tx.try_send(msg);
+        }
     }
 
     fn drain_network_events(&mut self) {
@@ -162,6 +185,9 @@ impl App {
                         self.position_set = true;
                         log::info!("Player position set to ({x:.1}, {y:.1}, {z:.1})");
                     }
+                }
+                NetworkEvent::ChatMessage { text } => {
+                    self.chat.push_message(text);
                 }
                 NetworkEvent::Disconnected { reason } => {
                     log::warn!("Disconnected: {reason}");
@@ -216,6 +242,10 @@ impl ApplicationHandler for App {
             }
         };
 
+        self.hud_textures = Some(hud::HudTextures::load(
+            renderer.egui_ctx(),
+            &self.assets_dir,
+        ));
         self.renderer = Some(renderer);
         self.window = Some(window);
         self.apply_cursor_grab();
@@ -227,7 +257,7 @@ impl ApplicationHandler for App {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
-        if matches!(self.state, GameState::Menu) {
+        if matches!(self.state, GameState::Menu) || self.paused || self.chat.is_open() {
             if let (Some(renderer), Some(window)) = (&mut self.renderer, &self.window) {
                 let response = renderer.handle_window_event(window, &event);
                 if response.consumed && !matches!(event, WindowEvent::RedrawRequested) {
@@ -248,12 +278,42 @@ impl ApplicationHandler for App {
             WindowEvent::KeyboardInput { event, .. } => {
                 if matches!(self.state, GameState::InGame) {
                     if event.state.is_pressed() {
-                        if let PhysicalKey::Code(KeyCode::Escape) = event.physical_key {
-                            self.input.toggle_cursor_capture();
-                            self.apply_cursor_grab();
+                        if let PhysicalKey::Code(code) = event.physical_key {
+                            match code {
+                                KeyCode::Escape => {
+                                    if self.chat.is_open() {
+                                        self.chat.close();
+                                    } else {
+                                        self.paused = !self.paused;
+                                    }
+                                    self.apply_cursor_grab();
+                                }
+                                KeyCode::KeyT | KeyCode::Enter
+                                    if !self.paused && !self.chat.is_open() =>
+                                {
+                                    self.chat.open();
+                                    self.apply_cursor_grab();
+                                }
+                                KeyCode::Slash if !self.paused && !self.chat.is_open() => {
+                                    self.chat.open_with_slash();
+                                    self.apply_cursor_grab();
+                                }
+                                _ => {}
+                            }
                         }
                     }
-                    self.input.on_key_event(&event);
+                    if !self.paused && !self.chat.is_open() {
+                        self.input.on_key_event(&event);
+                    }
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if matches!(self.state, GameState::InGame) {
+                    let scroll = match delta {
+                        winit::event::MouseScrollDelta::LineDelta(_, y) => y,
+                        winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32,
+                    };
+                    self.input.on_scroll(scroll);
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -269,9 +329,12 @@ impl ApplicationHandler for App {
                     GameState::Menu => {
                         if let (Some(renderer), Some(window)) = (&mut self.renderer, &self.window) {
                             let menu = &mut self.menu;
+                            let hud_textures = &self.hud_textures;
                             let mut action = MenuAction::None;
                             if let Err(e) = renderer.render_ui(window, |ctx| {
-                                action = menu.draw(ctx);
+                                if let Some(textures) = hud_textures {
+                                    action = menu.draw(ctx, textures);
+                                }
                             }) {
                                 log::error!("Render error: {e}");
                             }
@@ -290,29 +353,73 @@ impl ApplicationHandler for App {
                     GameState::InGame => {
                         self.drain_network_events();
 
-                        if let Some(renderer) = &mut self.renderer {
-                            renderer.update_camera(&mut self.input);
-                        }
+                        if !self.paused {
+                            if let Some(renderer) = &mut self.renderer {
+                                renderer.update_camera(&mut self.input);
+                            }
 
-                        self.tick_accumulator += dt;
-                        while self.tick_accumulator >= TICK_RATE {
-                            self.tick_physics();
-                            self.tick_accumulator -= TICK_RATE;
+                            self.tick_accumulator += dt;
+                            while self.tick_accumulator >= TICK_RATE {
+                                self.tick_physics();
+                                self.tick_accumulator -= TICK_RATE;
+                            }
                         }
 
                         let alpha = self.tick_accumulator / TICK_RATE;
                         let interp_pos = self.prev_player_pos.lerp(self.player.position, alpha);
                         let eye_pos = interp_pos + glam::Vec3::new(0.0, 1.62, 0.0);
 
-                        if let Some(renderer) = &mut self.renderer {
+                        let paused = self.paused;
+                        if let (Some(renderer), Some(window)) = (&mut self.renderer, &self.window) {
                             renderer.sync_camera_to_player(
                                 eye_pos,
                                 renderer.camera_yaw(),
                                 renderer.camera_pitch(),
                             );
 
-                            if let Err(e) = renderer.render_world() {
+                            let selected_slot = self.input.selected_slot();
+                            let hud_textures = &self.hud_textures;
+                            let chat = &mut self.chat;
+                            let mut pause_action = PauseAction::None;
+                            let mut chat_msg = None;
+                            if let Err(e) = renderer.render_world(window, |ctx| {
+                                let screen = ctx.screen_rect();
+                                if let Some(textures) = hud_textures {
+                                    hud::draw_hud(ctx, textures, selected_slot);
+                                    if paused {
+                                        pause_action = pause::draw_pause_menu(ctx, textures);
+                                    }
+                                }
+                                chat_msg = chat.draw(ctx, screen);
+                            }) {
                                 log::error!("Render error: {e}");
+                            }
+
+                            if let Some(msg) = chat_msg {
+                                self.send_chat_message(msg);
+                                self.apply_cursor_grab();
+                            }
+
+                            match pause_action {
+                                PauseAction::Resume => {
+                                    self.paused = false;
+                                    self.apply_cursor_grab();
+                                }
+                                PauseAction::Disconnect => {
+                                    self.net_events = None;
+                                    self.state = GameState::Menu;
+                                    self.paused = false;
+                                    self.position_set = false;
+                                    self.chunk_store = ChunkStore::new(8);
+                                    if let Some(renderer) = &mut self.renderer {
+                                        renderer.clear_chunk_meshes();
+                                    }
+                                    self.apply_cursor_grab();
+                                }
+                                PauseAction::Quit => {
+                                    event_loop.exit();
+                                }
+                                PauseAction::None => {}
                             }
                         }
                     }
@@ -333,7 +440,7 @@ impl ApplicationHandler for App {
         event: DeviceEvent,
     ) {
         if let DeviceEvent::MouseMotion { delta } = event {
-            if self.input.is_cursor_captured() {
+            if self.input.is_cursor_captured() && !self.paused && !self.chat.is_open() {
                 self.input.on_mouse_motion(delta);
             }
         }
@@ -341,12 +448,12 @@ impl ApplicationHandler for App {
 }
 
 pub fn run(
-    net_events: Option<crossbeam_channel::Receiver<NetworkEvent>>,
+    connection: Option<crate::net::connection::ConnectionHandle>,
     assets_dir: PathBuf,
     tokio_rt: Arc<tokio::runtime::Runtime>,
 ) -> Result<(), WindowError> {
     let event_loop = EventLoop::new()?;
-    let mut app = App::new(net_events, assets_dir, tokio_rt);
+    let mut app = App::new(connection, assets_dir, tokio_rt);
     event_loop.run_app(&mut app)?;
     Ok(())
 }

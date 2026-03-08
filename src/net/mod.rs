@@ -28,6 +28,9 @@ pub enum NetworkEvent {
         yaw: f32,
         pitch: f32,
     },
+    ChatMessage {
+        text: String,
+    },
     Disconnected {
         reason: String,
     },

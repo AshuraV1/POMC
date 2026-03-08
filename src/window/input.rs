@@ -6,6 +6,7 @@ pub struct InputState {
     pressed: HashSet<KeyCode>,
     mouse_delta: (f64, f64),
     cursor_captured: bool,
+    selected_slot: u8,
 }
 
 impl InputState {
@@ -14,6 +15,7 @@ impl InputState {
             pressed: HashSet::new(),
             mouse_delta: (0.0, 0.0),
             cursor_captured: true,
+            selected_slot: 0,
         }
     }
 
@@ -26,11 +28,26 @@ impl InputState {
             match event.state {
                 ElementState::Pressed => {
                     self.pressed.insert(code);
+                    if let Some(slot) = hotbar_slot(code) {
+                        self.selected_slot = slot;
+                    }
                 }
                 ElementState::Released => {
                     self.pressed.remove(&code);
                 }
             }
+        }
+    }
+
+    pub fn selected_slot(&self) -> u8 {
+        self.selected_slot
+    }
+
+    pub fn on_scroll(&mut self, delta: f32) {
+        if delta > 0.0 {
+            self.selected_slot = (self.selected_slot + 1) % 9;
+        } else if delta < 0.0 {
+            self.selected_slot = (self.selected_slot + 8) % 9;
         }
     }
 
@@ -45,11 +62,22 @@ impl InputState {
         delta
     }
 
-    pub fn toggle_cursor_capture(&mut self) {
-        self.cursor_captured = !self.cursor_captured;
-    }
-
     pub fn is_cursor_captured(&self) -> bool {
         self.cursor_captured
+    }
+}
+
+fn hotbar_slot(code: KeyCode) -> Option<u8> {
+    match code {
+        KeyCode::Digit1 => Some(0),
+        KeyCode::Digit2 => Some(1),
+        KeyCode::Digit3 => Some(2),
+        KeyCode::Digit4 => Some(3),
+        KeyCode::Digit5 => Some(4),
+        KeyCode::Digit6 => Some(5),
+        KeyCode::Digit7 => Some(6),
+        KeyCode::Digit8 => Some(7),
+        KeyCode::Digit9 => Some(8),
+        _ => None,
     }
 }

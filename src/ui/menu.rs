@@ -1,10 +1,14 @@
+use egui::Color32;
+
+use super::hud::{mc_button, HudTextures, BUTTON_GAP};
+
 pub enum MenuAction {
     None,
     Connect { server: String, username: String },
     Quit,
 }
 
-const LABEL_COLOR: egui::Color32 = egui::Color32::from_rgb(200, 200, 200);
+const LABEL_COLOR: Color32 = Color32::from_rgb(200, 200, 200);
 
 pub struct MainMenu {
     server_address: String,
@@ -21,11 +25,11 @@ impl MainMenu {
         }
     }
 
-    pub fn draw(&mut self, ctx: &egui::Context) -> MenuAction {
+    pub fn draw(&mut self, ctx: &egui::Context, textures: &HudTextures) -> MenuAction {
         let mut action = MenuAction::None;
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(30, 30, 30)))
+            .frame(egui::Frame::NONE.fill(Color32::from_rgb(30, 30, 30)))
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.add_space(80.0);
@@ -33,7 +37,7 @@ impl MainMenu {
                     ui.label(
                         egui::RichText::new("Ferrite")
                             .size(64.0)
-                            .color(egui::Color32::WHITE)
+                            .color(Color32::WHITE)
                             .strong(),
                     );
 
@@ -42,7 +46,7 @@ impl MainMenu {
                     ui.label(
                         egui::RichText::new("A Minecraft client written in Rust")
                             .size(16.0)
-                            .color(egui::Color32::from_rgb(180, 180, 180)),
+                            .color(Color32::from_rgb(180, 180, 180)),
                     );
 
                     ui.add_space(8.0);
@@ -50,34 +54,22 @@ impl MainMenu {
                     ui.label(
                         egui::RichText::new("Heavy early development - just getting started!")
                             .size(14.0)
-                            .color(egui::Color32::from_rgb(255, 200, 100))
+                            .color(Color32::from_rgb(255, 200, 100))
                             .italics(),
                     );
 
                     ui.add_space(40.0);
 
                     if self.show_connect {
-                        self.draw_connect_form(ui, &mut action);
+                        self.draw_connect_form(ui, textures, &mut action);
                     } else {
-                        if ui
-                            .add_sized(
-                                [220.0, 40.0],
-                                egui::Button::new(egui::RichText::new("Direct Connect").size(18.0)),
-                            )
-                            .clicked()
-                        {
+                        if mc_button(ui, textures, "Direct Connect") {
                             self.show_connect = true;
                         }
 
-                        ui.add_space(12.0);
+                        ui.add_space(BUTTON_GAP);
 
-                        if ui
-                            .add_sized(
-                                [220.0, 40.0],
-                                egui::Button::new(egui::RichText::new("Quit Game").size(18.0)),
-                            )
-                            .clicked()
-                        {
+                        if mc_button(ui, textures, "Quit Game") {
                             action = MenuAction::Quit;
                         }
                     }
@@ -87,7 +79,12 @@ impl MainMenu {
         action
     }
 
-    fn draw_connect_form(&mut self, ui: &mut egui::Ui, action: &mut MenuAction) {
+    fn draw_connect_form(
+        &mut self,
+        ui: &mut egui::Ui,
+        textures: &HudTextures,
+        action: &mut MenuAction,
+    ) {
         ui.set_max_width(300.0);
 
         ui.label(
@@ -119,26 +116,13 @@ impl MainMenu {
         ui.horizontal(|ui| {
             ui.add_space(40.0);
 
-            if ui
-                .add_sized(
-                    [100.0, 35.0],
-                    egui::Button::new(egui::RichText::new("Back").size(16.0)),
-                )
-                .clicked()
-            {
+            if mc_button(ui, textures, "Back") {
                 self.show_connect = false;
             }
 
             ui.add_space(16.0);
 
-            if ui
-                .add_sized(
-                    [140.0, 35.0],
-                    egui::Button::new(egui::RichText::new("Connect").size(16.0)),
-                )
-                .clicked()
-                || enter_pressed
-            {
+            if mc_button(ui, textures, "Connect") || enter_pressed {
                 *action = MenuAction::Connect {
                     server: self.server_address.clone(),
                     username: self.username.clone(),

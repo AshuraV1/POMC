@@ -50,22 +50,35 @@ pub struct ConnectArgs {
     pub access_token: Option<String>,
 }
 
+pub struct ConnectionHandle {
+    pub events: crossbeam_channel::Receiver<NetworkEvent>,
+    pub chat_tx: crossbeam_channel::Sender<String>,
+}
+
 pub fn spawn_connection(
     rt: &tokio::runtime::Runtime,
     args: ConnectArgs,
-) -> crossbeam_channel::Receiver<NetworkEvent> {
+) -> ConnectionHandle {
     let (event_tx, event_rx) = crossbeam_channel::bounded(256);
+    let (chat_tx, chat_rx) = crossbeam_channel::bounded::<String>(64);
     rt.spawn(async move {
-        if let Err(e) = connect_to_server(args, event_tx).await {
+        if let Err(e) = connect_to_server(args, event_tx.clone(), chat_rx).await {
             log::error!("Network error: {e}");
+            let _ = event_tx.try_send(NetworkEvent::Disconnected {
+                reason: e.to_string(),
+            });
         }
     });
-    event_rx
+    ConnectionHandle {
+        events: event_rx,
+        chat_tx,
+    }
 }
 
 pub async fn connect_to_server(
     args: ConnectArgs,
     event_tx: Sender<NetworkEvent>,
+    chat_rx: crossbeam_channel::Receiver<String>,
 ) -> Result<(), ConnectionError> {
     let addr = resolve_address(&args.server)?;
     log::info!("Connecting to {addr}...");
@@ -102,7 +115,7 @@ pub async fn connect_to_server(
     log::info!("Entering game state");
     let _ = event_tx.try_send(NetworkEvent::Connected);
 
-    game_loop(conn, &event_tx).await
+    game_loop(conn, &event_tx, chat_rx).await
 }
 
 async fn login_sequence(
@@ -266,6 +279,7 @@ async fn config_sequence(
 async fn game_loop(
     conn: Connection<ClientboundGamePacket, ServerboundGamePacket>,
     event_tx: &Sender<NetworkEvent>,
+    chat_rx: crossbeam_channel::Receiver<String>,
 ) -> Result<(), ConnectionError> {
     let (mut reader, mut writer): (
         ReadConnection<ClientboundGamePacket>,
@@ -273,12 +287,42 @@ async fn game_loop(
     ) = conn.into_split();
 
     let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<ServerboundGamePacket>();
-    let sender = PacketSender::new(outbound_tx);
+    let sender = PacketSender::new(outbound_tx.clone());
 
     tokio::spawn(async move {
         while let Some(packet) = outbound_rx.recv().await {
             if let Err(e) = writer.write(packet).await {
                 log::error!("Failed to write packet: {e}");
+                break;
+            }
+        }
+    });
+
+    let chat_outbound_tx = outbound_tx;
+    tokio::spawn(async move {
+        while let Ok(msg) = tokio::task::block_in_place(|| chat_rx.recv()) {
+            let packet = if let Some(command) = msg.strip_prefix('/') {
+                ServerboundGamePacket::ChatCommand(
+                    azalea_protocol::packets::game::s_chat_command::ServerboundChatCommand {
+                        command: command.to_string(),
+                    },
+                )
+            } else {
+                // TODO: implement chat signing — requires enforce-secure-profile=false for now
+                ServerboundGamePacket::Chat(
+                    azalea_protocol::packets::game::s_chat::ServerboundChat {
+                        message: msg,
+                        timestamp: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64,
+                        salt: 0,
+                        signature: None,
+                        last_seen_messages: Default::default(),
+                    },
+                )
+            };
+            if chat_outbound_tx.send(packet).is_err() {
                 break;
             }
         }

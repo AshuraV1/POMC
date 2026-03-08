@@ -27,7 +27,7 @@ fn main() {
 
     let rt = Arc::new(tokio::runtime::Runtime::new().expect("failed to create tokio runtime"));
 
-    let event_rx = if let Some(ref server) = args.server {
+    let connection = if let Some(ref server) = args.server {
         let connect_args = ConnectArgs {
             server: server.clone(),
             username: args.username.clone().unwrap_or_else(|| "Steve".into()),
@@ -44,7 +44,7 @@ fn main() {
         None
     };
 
-    if let Err(e) = window::run(event_rx, assets_dir, rt) {
+    if let Err(e) = window::run(connection, assets_dir, rt) {
         log::error!("Fatal: {e}");
         std::process::exit(1);
     }

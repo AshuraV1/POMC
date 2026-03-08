@@ -56,6 +56,17 @@ pub fn handle_game_packet(
                 },
             ));
         }
+        ClientboundGamePacket::SystemChat(p) => {
+            if !p.overlay {
+                send_chat(event_tx, p.content.to_string());
+            }
+        }
+        ClientboundGamePacket::PlayerChat(p) => {
+            send_chat(event_tx, p.message().to_string());
+        }
+        ClientboundGamePacket::DisguisedChat(p) => {
+            send_chat(event_tx, p.message.to_string());
+        }
         ClientboundGamePacket::Disconnect(p) => {
             log::warn!("Disconnected: {}", p.reason);
             let _ = event_tx.try_send(NetworkEvent::Disconnected {
@@ -66,4 +77,9 @@ pub fn handle_game_packet(
             log::debug!("Game packet: {:?}", std::mem::discriminant(other));
         }
     }
+}
+
+fn send_chat(event_tx: &Sender<NetworkEvent>, text: String) {
+    log::info!("Chat: {text}");
+    let _ = event_tx.try_send(NetworkEvent::ChatMessage { text });
 }

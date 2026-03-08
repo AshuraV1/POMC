@@ -163,6 +163,10 @@ impl ChunkPipeline {
         self.meshes.remove(pos);
     }
 
+    pub fn clear_meshes(&mut self) {
+        self.meshes.clear();
+    }
+
     pub fn draw<'a>(&'a self, render_pass: &mut wgpu::RenderPass<'a>) {
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
