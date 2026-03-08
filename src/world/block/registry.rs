@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use azalea_block::BlockState;
 
+#[derive(Clone)]
 pub struct FaceTextures {
     pub top: &'static str,
     pub bottom: &'static str,
@@ -35,6 +36,7 @@ impl FaceTextures {
     }
 }
 
+#[derive(Clone)]
 pub struct BlockRegistry {
     textures: HashMap<&'static str, FaceTextures>,
 }

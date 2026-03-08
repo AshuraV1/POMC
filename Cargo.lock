@@ -1915,6 +1915,7 @@ dependencies = [
  "log",
  "parking_lot",
  "pollster",
+ "rayon",
  "thiserror 2.0.18",
  "tokio",
  "uuid",

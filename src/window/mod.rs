@@ -14,6 +14,7 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 use crate::net::NetworkEvent;
 use crate::physics::movement;
 use crate::player::LocalPlayer;
+use crate::renderer::chunk::mesher::MeshDispatcher;
 use crate::renderer::Renderer;
 use crate::ui::chat::ChatState;
 use crate::ui::hud;
@@ -58,6 +59,7 @@ struct App {
     tick_accumulator: f32,
     prev_player_pos: glam::Vec3,
     hud_textures: Option<hud::HudTextures>,
+    mesh_dispatcher: Option<MeshDispatcher>,
     paused: bool,
     chat: ChatState,
 }
@@ -95,6 +97,7 @@ impl App {
             tick_accumulator: 0.0,
             prev_player_pos: glam::Vec3::ZERO,
             hud_textures: None,
+            mesh_dispatcher: None,
             paused: false,
             chat: ChatState::new(),
         }
@@ -186,6 +189,11 @@ impl App {
                         log::info!("Player position set to ({x:.1}, {y:.1}, {z:.1})");
                     }
                 }
+                NetworkEvent::PlayerHealth { health, food, saturation } => {
+                    self.player.health = health;
+                    self.player.food = food;
+                    self.player.saturation = saturation;
+                }
                 NetworkEvent::ChatMessage { text } => {
                     self.chat.push_message(text);
                 }
@@ -195,10 +203,9 @@ impl App {
             }
         }
 
-        if let Some(renderer) = &mut self.renderer {
+        if let Some(dispatcher) = &self.mesh_dispatcher {
             for pos in chunks_to_mesh {
-                let mesh = renderer.mesh_chunk(&self.chunk_store, pos);
-                renderer.upload_chunk_mesh(&mesh);
+                dispatcher.enqueue(&self.chunk_store, pos);
             }
         }
     }
@@ -246,6 +253,7 @@ impl ApplicationHandler for App {
             renderer.egui_ctx(),
             &self.assets_dir,
         ));
+        self.mesh_dispatcher = Some(renderer.create_mesh_dispatcher());
         self.renderer = Some(renderer);
         self.window = Some(window);
         self.apply_cursor_grab();
@@ -353,6 +361,14 @@ impl ApplicationHandler for App {
                     GameState::InGame => {
                         self.drain_network_events();
 
+                        if let (Some(dispatcher), Some(renderer)) =
+                            (&self.mesh_dispatcher, &mut self.renderer)
+                        {
+                            for mesh in dispatcher.drain_results() {
+                                renderer.upload_chunk_mesh(&mesh);
+                            }
+                        }
+
                         if !self.paused {
                             if let Some(renderer) = &mut self.renderer {
                                 renderer.update_camera(&mut self.input);
@@ -378,6 +394,8 @@ impl ApplicationHandler for App {
                             );
 
                             let selected_slot = self.input.selected_slot();
+                            let health = self.player.health;
+                            let food = self.player.food;
                             let hud_textures = &self.hud_textures;
                             let chat = &mut self.chat;
                             let mut pause_action = PauseAction::None;
@@ -385,7 +403,7 @@ impl ApplicationHandler for App {
                             if let Err(e) = renderer.render_world(window, |ctx| {
                                 let screen = ctx.screen_rect();
                                 if let Some(textures) = hud_textures {
-                                    hud::draw_hud(ctx, textures, selected_slot);
+                                    hud::draw_hud(ctx, textures, selected_slot, health, food);
                                     if paused {
                                         pause_action = pause::draw_pause_menu(ctx, textures);
                                     }
@@ -413,6 +431,8 @@ impl ApplicationHandler for App {
                                     self.chunk_store = ChunkStore::new(8);
                                     if let Some(renderer) = &mut self.renderer {
                                         renderer.clear_chunk_meshes();
+                                        self.mesh_dispatcher =
+                                            Some(renderer.create_mesh_dispatcher());
                                     }
                                     self.apply_cursor_grab();
                                 }

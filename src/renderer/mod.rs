@@ -13,13 +13,12 @@ use winit::window::Window;
 
 use camera::{Camera, CameraUniform};
 use chunk::atlas::TextureAtlas;
-use chunk::mesher::ChunkMeshData;
+use chunk::mesher::{ChunkMeshData, MeshDispatcher};
 use context::GpuContext;
 use pipelines::chunk::ChunkPipeline;
 
 use crate::window::input::InputState;
 use crate::world::block::registry::BlockRegistry;
-use crate::world::chunk::ChunkStore;
 
 #[derive(Error, Debug)]
 pub enum RendererError {
@@ -143,8 +142,8 @@ impl Renderer {
         self.chunk_pipeline.clear_meshes();
     }
 
-    pub fn mesh_chunk(&self, chunk_store: &ChunkStore, pos: ChunkPos) -> ChunkMeshData {
-        chunk::mesher::mesh_chunk(chunk_store, pos, &self.registry, &self.atlas)
+    pub fn create_mesh_dispatcher(&self) -> MeshDispatcher {
+        MeshDispatcher::new(self.registry.clone(), self.atlas.uv_map())
     }
 
     pub fn render_world(

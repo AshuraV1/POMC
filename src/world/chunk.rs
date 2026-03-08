@@ -60,21 +60,7 @@ impl ChunkStore {
             return BlockState::AIR;
         };
         let chunk = chunk_lock.read();
-
-        let section_idx = ((y - OVERWORLD_MIN_Y) / 16) as usize;
-        if section_idx >= chunk.sections.len() {
-            return BlockState::AIR;
-        }
-
-        let local_x = x.rem_euclid(16) as u8;
-        let local_y = (y - OVERWORLD_MIN_Y).rem_euclid(16) as u8;
-        let local_z = z.rem_euclid(16) as u8;
-
-        chunk.sections[section_idx].get_block_state(azalea_core::position::ChunkSectionBlockPos {
-            x: local_x,
-            y: local_y,
-            z: local_z,
-        })
+        block_state_from_section(&chunk, x, y, z, OVERWORLD_MIN_Y)
     }
 
     pub fn height(&self) -> u32 {
@@ -84,4 +70,27 @@ impl ChunkStore {
     pub fn min_y(&self) -> i32 {
         OVERWORLD_MIN_Y
     }
+}
+
+pub fn block_state_from_section(
+    chunk: &Chunk,
+    x: i32,
+    y: i32,
+    z: i32,
+    min_y: i32,
+) -> BlockState {
+    let section_idx = ((y - min_y) / 16) as usize;
+    if section_idx >= chunk.sections.len() {
+        return BlockState::AIR;
+    }
+
+    let local_x = x.rem_euclid(16) as u8;
+    let local_y = (y - min_y).rem_euclid(16) as u8;
+    let local_z = z.rem_euclid(16) as u8;
+
+    chunk.sections[section_idx].get_block_state(azalea_core::position::ChunkSectionBlockPos {
+        x: local_x,
+        y: local_y,
+        z: local_z,
+    })
 }

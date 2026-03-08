@@ -56,6 +56,13 @@ pub fn handle_game_packet(
                 },
             ));
         }
+        ClientboundGamePacket::SetHealth(p) => {
+            let _ = event_tx.try_send(NetworkEvent::PlayerHealth {
+                health: p.health,
+                food: p.food,
+                saturation: p.saturation,
+            });
+        }
         ClientboundGamePacket::SystemChat(p) => {
             if !p.overlay {
                 send_chat(event_tx, p.content.to_string());

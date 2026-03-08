@@ -6,6 +6,9 @@ pub struct LocalPlayer {
     pub yaw: f32,
     pub pitch: f32,
     pub on_ground: bool,
+    pub health: f32,
+    pub food: u32,
+    pub saturation: f32,
 }
 
 impl LocalPlayer {
@@ -16,6 +19,9 @@ impl LocalPlayer {
             yaw: 0.0,
             pitch: 0.0,
             on_ground: false,
+            health: 20.0,
+            food: 20,
+            saturation: 5.0,
         }
     }
 }

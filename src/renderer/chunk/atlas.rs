@@ -148,6 +148,20 @@ impl TextureAtlas {
         })
     }
 
+    pub fn uv_map(&self) -> AtlasUVMap {
+        AtlasUVMap {
+            regions: self.regions.clone(),
+            missing: self.missing,
+        }
+    }
+}
+
+pub struct AtlasUVMap {
+    regions: HashMap<String, AtlasRegion>,
+    missing: AtlasRegion,
+}
+
+impl AtlasUVMap {
     pub fn get_region(&self, name: &str) -> AtlasRegion {
         self.regions.get(name).copied().unwrap_or(self.missing)
     }

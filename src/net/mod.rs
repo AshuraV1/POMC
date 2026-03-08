@@ -28,6 +28,11 @@ pub enum NetworkEvent {
         yaw: f32,
         pitch: f32,
     },
+    PlayerHealth {
+        health: f32,
+        food: u32,
+        saturation: f32,
+    },
     ChatMessage {
         text: String,
     },

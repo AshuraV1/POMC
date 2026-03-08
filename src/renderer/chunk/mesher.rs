@@ -1,8 +1,10 @@
+use std::sync::Arc;
+
 use azalea_core::position::ChunkPos;
 
-use crate::renderer::chunk::atlas::{AtlasRegion, TextureAtlas};
+use crate::renderer::chunk::atlas::{AtlasRegion, AtlasUVMap};
 use crate::world::block::registry::{BlockRegistry, FaceTextures};
-use crate::world::chunk::ChunkStore;
+use crate::world::chunk::{self, ChunkStore};
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -133,17 +135,108 @@ fn texture_tint(name: &str) -> [f32; 3] {
     }
 }
 
-pub fn mesh_chunk(
-    chunk_store: &ChunkStore,
+const MAX_MESH_UPLOADS_PER_FRAME: usize = 4;
+
+pub struct MeshDispatcher {
+    result_rx: crossbeam_channel::Receiver<ChunkMeshData>,
+    result_tx: crossbeam_channel::Sender<ChunkMeshData>,
+    registry: Arc<BlockRegistry>,
+    uv_map: Arc<AtlasUVMap>,
+}
+
+impl MeshDispatcher {
+    pub fn new(registry: BlockRegistry, uv_map: AtlasUVMap) -> Self {
+        let (result_tx, result_rx) = crossbeam_channel::unbounded();
+        Self {
+            result_rx,
+            result_tx,
+            registry: Arc::new(registry),
+            uv_map: Arc::new(uv_map),
+        }
+    }
+
+    pub fn enqueue(&self, chunk_store: &ChunkStore, pos: ChunkPos) {
+        let registry = Arc::clone(&self.registry);
+        let uv_map = Arc::clone(&self.uv_map);
+        let tx = self.result_tx.clone();
+
+        let chunks_needed = [
+            pos,
+            ChunkPos::new(pos.x - 1, pos.z),
+            ChunkPos::new(pos.x + 1, pos.z),
+            ChunkPos::new(pos.x, pos.z - 1),
+            ChunkPos::new(pos.x, pos.z + 1),
+        ];
+        let chunk_arcs: Vec<_> = chunks_needed
+            .iter()
+            .map(|p| chunk_store.get_chunk(p))
+            .collect();
+
+        let min_y = chunk_store.min_y();
+        let height = chunk_store.height();
+
+        rayon::spawn(move || {
+            let snapshot = ChunkStoreSnapshot {
+                chunks: chunks_needed
+                    .into_iter()
+                    .zip(chunk_arcs)
+                    .collect(),
+                min_y,
+                height,
+            };
+            let mesh = mesh_chunk_snapshot(&snapshot, pos, &registry, &uv_map);
+            let _ = tx.send(mesh);
+        });
+    }
+
+    pub fn drain_results(&self) -> impl Iterator<Item = ChunkMeshData> + '_ {
+        self.result_rx.try_iter().take(MAX_MESH_UPLOADS_PER_FRAME)
+    }
+}
+
+struct ChunkStoreSnapshot {
+    chunks: Vec<(ChunkPos, Option<Arc<parking_lot::RwLock<azalea_world::chunk_storage::Chunk>>>)>,
+    min_y: i32,
+    height: u32,
+}
+
+impl ChunkStoreSnapshot {
+    fn get_block_state(&self, x: i32, y: i32, z: i32) -> azalea_block::BlockState {
+        let chunk_pos = ChunkPos::new(x.div_euclid(16), z.div_euclid(16));
+        let chunk_lock = self
+            .chunks
+            .iter()
+            .find(|(p, _)| *p == chunk_pos)
+            .and_then(|(_, c)| c.as_ref());
+
+        let Some(chunk_lock) = chunk_lock else {
+            return azalea_block::BlockState::AIR;
+        };
+
+        let c = chunk_lock.read();
+        chunk::block_state_from_section(&c, x, y, z, self.min_y)
+    }
+
+    fn min_y(&self) -> i32 {
+        self.min_y
+    }
+
+    fn height(&self) -> u32 {
+        self.height
+    }
+}
+
+fn mesh_chunk_snapshot(
+    snapshot: &ChunkStoreSnapshot,
     pos: ChunkPos,
     registry: &BlockRegistry,
-    atlas: &TextureAtlas,
+    uv_map: &AtlasUVMap,
 ) -> ChunkMeshData {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
 
-    let min_y = chunk_store.min_y();
-    let max_y = min_y + chunk_store.height() as i32;
+    let min_y = snapshot.min_y();
+    let max_y = min_y + snapshot.height() as i32;
     let world_x = pos.x * 16;
     let world_z = pos.z * 16;
 
@@ -153,7 +246,7 @@ pub fn mesh_chunk(
             let bz = world_z + local_z;
 
             for by in min_y..max_y {
-                let state = chunk_store.get_block_state(bx, by, bz);
+                let state = snapshot.get_block_state(bx, by, bz);
                 if state.is_air() {
                     continue;
                 }
@@ -166,14 +259,14 @@ pub fn mesh_chunk(
                 let block_pos = [bx as f32, by as f32, bz as f32];
 
                 for (i, face) in FACES.iter().enumerate() {
-                    let neighbor = chunk_store.get_block_state(
+                    let neighbor = snapshot.get_block_state(
                         bx + face.offset[0],
                         by + face.offset[1],
                         bz + face.offset[2],
                     );
                     if neighbor.is_air() {
                         let tex_name = face_texture(textures, i);
-                        let region = atlas.get_region(tex_name);
+                        let region = uv_map.get_region(tex_name);
                         let tint = texture_tint(tex_name);
                         emit_face(&mut vertices, &mut indices, block_pos, face, region, tint);
                     }
