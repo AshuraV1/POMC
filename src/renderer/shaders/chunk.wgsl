@@ -30,11 +30,22 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     return out;
 }
 
+fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
+    return pow(c, vec3<f32>(1.0 / 2.2));
+}
+
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    return pow(c, vec3<f32>(2.2));
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let color = textureSample(atlas_texture, atlas_sampler, in.tex_coords);
     if color.a < 0.5 {
         discard;
     }
-    return vec4<f32>(color.rgb * in.tint * in.light, color.a);
+    // Tint and light multiply in sRGB space to match vanilla's rendering
+    let srgb = linear_to_srgb(color.rgb);
+    let tinted = srgb * in.tint * in.light;
+    return vec4<f32>(srgb_to_linear(tinted), color.a);
 }

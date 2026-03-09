@@ -3,7 +3,7 @@ use std::sync::Arc;
 use azalea_core::position::ChunkPos;
 
 use crate::renderer::chunk::atlas::{AtlasRegion, AtlasUVMap};
-use crate::world::block::registry::{BlockRegistry, FaceTextures};
+use crate::world::block::registry::{BlockRegistry, FaceTextures, Tint};
 use crate::world::chunk::{self, ChunkStore};
 
 #[repr(C)]
@@ -132,13 +132,17 @@ fn face_texture(textures: &FaceTextures, face_idx: usize) -> &str {
 }
 
 const WHITE: [f32; 3] = [1.0, 1.0, 1.0];
-// TODO: Replace hardcoded tint with biome colormap sampling (grass.png/foliage.png)
-const GRASS_TINT: [f32; 3] = [0.486, 0.741, 0.42];
+// TODO: Replace hardcoded tints with biome colormap sampling (grass.png/foliage.png)
+// Plains biome: grass.png at temp=0.8, downfall=0.4 → #91BD59
+const GRASS_TINT: [f32; 3] = [0.569, 0.741, 0.349];
+// Plains biome: foliage.png at temp=0.8, downfall=0.4 → #77AB2F
+const FOLIAGE_TINT: [f32; 3] = [0.467, 0.671, 0.184];
 
-fn texture_tint(name: &str) -> [f32; 3] {
-    match name {
-        "grass_block_top" | "grass_block_side" => GRASS_TINT,
-        _ => WHITE,
+fn tint_color(tint: Tint) -> [f32; 3] {
+    match tint {
+        Tint::None => WHITE,
+        Tint::Grass => GRASS_TINT,
+        Tint::Foliage => FOLIAGE_TINT,
     }
 }
 
@@ -265,6 +269,9 @@ fn mesh_chunk_snapshot(
 
                 let block_pos = [bx as f32, by as f32, bz as f32];
 
+                let tint = tint_color(textures.tint);
+                let is_side = |idx: usize| idx >= 2;
+
                 for (i, face) in FACES.iter().enumerate() {
                     let neighbor = snapshot.get_block_state(
                         bx + face.offset[0],
@@ -274,8 +281,17 @@ fn mesh_chunk_snapshot(
                     if neighbor.is_air() {
                         let tex_name = face_texture(textures, i);
                         let region = uv_map.get_region(tex_name);
-                        let tint = texture_tint(tex_name);
-                        emit_face(&mut vertices, &mut indices, block_pos, face, region, tint);
+
+                        if is_side(i) && textures.side_overlay.is_some() {
+                            emit_face(&mut vertices, &mut indices, block_pos, face, region, WHITE);
+                            let overlay_region = uv_map.get_region(textures.side_overlay.unwrap());
+                            emit_face(&mut vertices, &mut indices, block_pos, face, overlay_region, tint);
+                        } else {
+                            let is_tinted_face = !matches!(textures.tint, Tint::None)
+                                && (textures.side_overlay.is_none() || i == 0);
+                            let face_tint = if is_tinted_face { tint } else { WHITE };
+                            emit_face(&mut vertices, &mut indices, block_pos, face, region, face_tint);
+                        }
                     }
                 }
             }

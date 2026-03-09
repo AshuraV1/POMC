@@ -2,6 +2,13 @@ use std::collections::HashMap;
 
 use azalea_block::BlockState;
 
+#[derive(Clone, Copy)]
+pub enum Tint {
+    None,
+    Grass,
+    Foliage,
+}
+
 #[derive(Clone)]
 pub struct FaceTextures {
     pub top: &'static str,
@@ -10,6 +17,8 @@ pub struct FaceTextures {
     pub south: &'static str,
     pub east: &'static str,
     pub west: &'static str,
+    pub side_overlay: Option<&'static str>,
+    pub tint: Tint,
 }
 
 impl FaceTextures {
@@ -21,6 +30,8 @@ impl FaceTextures {
             south: name,
             east: name,
             west: name,
+            side_overlay: None,
+            tint: Tint::None,
         }
     }
 
@@ -32,7 +43,19 @@ impl FaceTextures {
             south: side,
             east: side,
             west: side,
+            side_overlay: None,
+            tint: Tint::None,
         }
+    }
+
+    fn with_tint(mut self, tint: Tint) -> Self {
+        self.tint = tint;
+        self
+    }
+
+    fn with_side_overlay(mut self, overlay: &'static str) -> Self {
+        self.side_overlay = Some(overlay);
+        self
     }
 }
 
@@ -59,7 +82,9 @@ impl BlockRegistry {
         textures.insert("polished_andesite", all("polished_andesite"));
         textures.insert(
             "grass_block",
-            tbs("grass_block_top", "dirt", "grass_block_side"),
+            tbs("grass_block_top", "dirt", "grass_block_side")
+                .with_tint(Tint::Grass)
+                .with_side_overlay("grass_block_side_overlay"),
         );
         textures.insert("dirt", all("dirt"));
         textures.insert("coarse_dirt", all("coarse_dirt"));
@@ -70,7 +95,7 @@ impl BlockRegistry {
         textures.insert("gravel", all("gravel"));
         textures.insert("oak_log", tbs("oak_log_top", "oak_log_top", "oak_log"));
         textures.insert("oak_planks", all("oak_planks"));
-        textures.insert("oak_leaves", all("oak_leaves"));
+        textures.insert("oak_leaves", all("oak_leaves").with_tint(Tint::Foliage));
         textures.insert("glass", all("glass"));
         textures.insert("coal_ore", all("coal_ore"));
         textures.insert("iron_ore", all("iron_ore"));
@@ -86,7 +111,7 @@ impl BlockRegistry {
         textures.insert("lava", all("lava_still"));
         textures.insert("clay", all("clay"));
         textures.insert("snow_block", all("snow"));
-        textures.insert("short_grass", all("short_grass"));
+        textures.insert("short_grass", all("short_grass").with_tint(Tint::Grass));
 
         Self { textures }
     }
@@ -98,8 +123,9 @@ impl BlockRegistry {
     }
 
     pub fn texture_names(&self) -> impl Iterator<Item = &'static str> + '_ {
-        self.textures
-            .values()
-            .flat_map(|ft| [ft.top, ft.bottom, ft.north, ft.south, ft.east, ft.west])
+        self.textures.values().flat_map(|ft| {
+            let base = [ft.top, ft.bottom, ft.north, ft.south, ft.east, ft.west];
+            base.into_iter().chain(ft.side_overlay)
+        })
     }
 }
