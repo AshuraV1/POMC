@@ -4,6 +4,7 @@ mod context;
 pub mod pipelines;
 pub(crate) mod shader;
 mod swapchain;
+pub(crate) mod util;
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -21,6 +22,7 @@ use chunk::buffer::ChunkBufferStore;
 use chunk::mesher::{ChunkMeshData, MeshDispatcher};
 use context::VulkanContext;
 use pipelines::chunk::ChunkPipeline;
+use pipelines::panorama::PanoramaPipeline;
 use swapchain::SwapchainState;
 
 use crate::assets::AssetIndex;
@@ -36,6 +38,11 @@ pub enum RendererError {
     Vulkan(#[from] vk::Result),
 }
 
+enum RenderMode {
+    World,
+    Panorama(f32),
+}
+
 pub struct Renderer {
     ctx: VulkanContext,
     swapchain: SwapchainState,
@@ -43,9 +50,11 @@ pub struct Renderer {
     registry: BlockRegistry,
     atlas: TextureAtlas,
     chunk_pipeline: ChunkPipeline,
+    panorama_pipeline: PanoramaPipeline,
     chunk_buffers: ChunkBufferStore,
     egui_state: egui_winit::State,
     egui_ctx: egui::Context,
+    assets_dir: std::path::PathBuf,
     swapchain_dirty: bool,
     width: u32,
     height: u32,
@@ -93,6 +102,15 @@ impl Renderer {
             &atlas,
         );
 
+        let panorama_pipeline = PanoramaPipeline::new(
+            &ctx.device,
+            ctx.graphics_queue,
+            ctx.command_pool,
+            swapchain_state.render_pass,
+            &ctx.allocator,
+            assets_dir,
+        );
+
         let chunk_buffers = ChunkBufferStore::new();
 
         let egui_ctx = egui::Context::default();
@@ -112,9 +130,11 @@ impl Renderer {
             registry,
             atlas,
             chunk_pipeline,
+            panorama_pipeline,
             chunk_buffers,
             egui_state,
             egui_ctx,
+            assets_dir: assets_dir.to_path_buf(),
             swapchain_dirty: false,
             width: size.width.max(1),
             height: size.height.max(1),
@@ -136,6 +156,7 @@ impl Renderer {
         unsafe { let _ = self.ctx.device.device_wait_idle(); }
 
         self.chunk_pipeline.destroy(&self.ctx.device, &self.ctx.allocator);
+        self.panorama_pipeline.destroy(&self.ctx.device, &self.ctx.allocator);
 
         self.swapchain.destroy(
             &self.ctx.device,
@@ -160,6 +181,15 @@ impl Renderer {
             self.swapchain.render_pass,
             &self.ctx.allocator,
             &self.atlas,
+        );
+
+        self.panorama_pipeline = PanoramaPipeline::new(
+            &self.ctx.device,
+            self.ctx.graphics_queue,
+            self.ctx.command_pool,
+            self.swapchain.render_pass,
+            &self.ctx.allocator,
+            &self.assets_dir,
         );
 
         self.swapchain_dirty = false;
@@ -226,16 +256,16 @@ impl Renderer {
         hide_cursor: bool,
         _hud_fn: impl FnMut(&egui::Context),
     ) -> Result<(), RendererError> {
-        self.render_frame(window, hide_cursor, [0.529, 0.808, 0.922, 1.0], true)
+        self.render_frame(window, hide_cursor, [0.529, 0.808, 0.922, 1.0], RenderMode::World)
     }
 
     pub fn render_ui(
         &mut self,
         window: &Window,
-        _scroll: f32,
+        scroll: f32,
         _ui_fn: impl FnMut(&egui::Context),
     ) -> Result<(), RendererError> {
-        self.render_frame(window, false, [0.0, 0.0, 0.0, 1.0], false)
+        self.render_frame(window, false, [0.0, 0.0, 0.0, 1.0], RenderMode::Panorama(scroll))
     }
 
     fn render_frame(
@@ -243,7 +273,7 @@ impl Renderer {
         _window: &Window,
         _hide_cursor: bool,
         clear_color: [f32; 4],
-        draw_chunks: bool,
+        mode: RenderMode,
     ) -> Result<(), RendererError> {
         if self.swapchain_dirty {
             self.recreate_swapchain()?;
@@ -277,7 +307,7 @@ impl Renderer {
             Err(e) => return Err(e.into()),
         };
 
-        if draw_chunks {
+        if matches!(mode, RenderMode::World) {
             let uniform = CameraUniform::from_camera(&self.camera);
             self.chunk_pipeline.update_camera(frame, &uniform);
         }
@@ -338,9 +368,14 @@ impl Renderer {
             };
             self.ctx.device.cmd_set_scissor(cmd, 0, &[scissor]);
 
-            if draw_chunks {
-                self.chunk_pipeline.bind(&self.ctx.device, cmd, frame);
-                self.chunk_buffers.draw(&self.ctx.device, cmd);
+            match mode {
+                RenderMode::World => {
+                    self.chunk_pipeline.bind(&self.ctx.device, cmd, frame);
+                    self.chunk_buffers.draw(&self.ctx.device, cmd);
+                }
+                RenderMode::Panorama(scroll) => {
+                    self.panorama_pipeline.draw(&self.ctx.device, cmd, scroll);
+                }
             }
 
             self.ctx.device.cmd_end_render_pass(cmd);
@@ -392,6 +427,8 @@ impl Drop for Renderer {
         self.chunk_buffers
             .clear(&self.ctx.device, &self.ctx.allocator);
         self.chunk_pipeline
+            .destroy(&self.ctx.device, &self.ctx.allocator);
+        self.panorama_pipeline
             .destroy(&self.ctx.device, &self.ctx.allocator);
         self.atlas
             .destroy(&self.ctx.device, &self.ctx.allocator);

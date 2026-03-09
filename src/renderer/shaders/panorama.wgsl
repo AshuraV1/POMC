@@ -1,4 +1,8 @@
-@group(0) @binding(0) var<uniform> scroll: f32;
+struct ScrollUniform {
+    scroll: f32,
+};
+@group(0) @binding(0) var<uniform> scroll_data: ScrollUniform;
+
 @group(1) @binding(0) var strip: texture_2d<f32>;
 @group(1) @binding(1) var strip_sampler: sampler;
 
@@ -20,6 +24,6 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let u = in.uv.x + scroll;
+    let u = in.uv.x + scroll_data.scroll;
     return textureSample(strip, strip_sampler, vec2<f32>(u, in.uv.y));
 }

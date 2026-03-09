@@ -7,6 +7,7 @@ use gpu_allocator::MemoryLocation;
 use crate::renderer::camera::CameraUniform;
 use crate::renderer::chunk::atlas::TextureAtlas;
 use crate::renderer::shader;
+use crate::renderer::util;
 
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
@@ -29,12 +30,12 @@ impl ChunkPipeline {
         allocator: &Arc<Mutex<Allocator>>,
         atlas: &TextureAtlas,
     ) -> Self {
-        let camera_layout = create_descriptor_set_layout(
+        let camera_layout = util::create_descriptor_set_layout(
             device,
             vk::DescriptorType::UNIFORM_BUFFER,
             vk::ShaderStageFlags::VERTEX,
         );
-        let atlas_layout = create_descriptor_set_layout(
+        let atlas_layout = util::create_descriptor_set_layout(
             device,
             vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
             vk::ShaderStageFlags::FRAGMENT,
@@ -162,23 +163,6 @@ impl ChunkPipeline {
             device.destroy_descriptor_set_layout(self.descriptor_set_layout_atlas, None);
         }
     }
-}
-
-fn create_descriptor_set_layout(
-    device: &ash::Device,
-    descriptor_type: vk::DescriptorType,
-    stage_flags: vk::ShaderStageFlags,
-) -> vk::DescriptorSetLayout {
-    let bindings = [vk::DescriptorSetLayoutBinding {
-        binding: 0,
-        descriptor_type,
-        descriptor_count: 1,
-        stage_flags,
-        ..Default::default()
-    }];
-    let info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
-    unsafe { device.create_descriptor_set_layout(&info, None) }
-        .expect("failed to create descriptor set layout")
 }
 
 fn create_uniform_buffer(
