@@ -1,11 +1,15 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
+
+use parking_lot::Mutex;
 
 use crate::renderer::pipelines::menu_overlay::{
     MenuElement, ICON_CHECK, ICON_CODE, ICON_COMMENT, ICON_GEAR, ICON_GLOBE, ICON_LINK,
     ICON_PAINTBRUSH, ICON_USER,
 };
 
+use super::auth::{self, AuthAccount, AuthStatus};
 use super::common::{self, WHITE};
 use super::server_list::{is_valid_address, ping_all_servers, PingResults, PingState, ServerEntry, ServerList};
 
@@ -74,12 +78,21 @@ const DOUBLE_CLICK_MS: u128 = 400;
 
 enum Screen {
     Main,
+    AuthPrompt { pending: AuthPending },
+    Auth { pending: AuthPending },
     ServerList,
     ConfirmDelete(usize),
     DirectConnect,
     AddServer,
     EditServer(usize),
     Disconnected(String),
+}
+
+#[derive(Clone, Copy)]
+enum AuthPending {
+    None,
+    Singleplayer,
+    Multiplayer,
 }
 
 pub struct MainMenu {
@@ -91,7 +104,7 @@ pub struct MainMenu {
     edit_address: String,
     last_mp_ip: String,
     ping_results: PingResults,
-    rt: std::sync::Arc<tokio::runtime::Runtime>,
+    rt: Arc<tokio::runtime::Runtime>,
     links_open: bool,
     theme_open: bool,
     theme: PanoramaTheme,
@@ -101,15 +114,23 @@ pub struct MainMenu {
     cursor_blink: Instant,
     last_click_time: Instant,
     last_click_index: Option<usize>,
+    auth_status: Arc<Mutex<AuthStatus>>,
+    auth_account: Option<AuthAccount>,
+    cache_file: PathBuf,
 }
 
 impl MainMenu {
-    pub fn new(game_dir: &Path, rt: std::sync::Arc<tokio::runtime::Runtime>) -> Self {
+    pub fn new(game_dir: &Path, rt: Arc<tokio::runtime::Runtime>) -> Self {
         let server_list = ServerList::load(game_dir);
         let ping_results: PingResults = Default::default();
         ping_all_servers(&rt, &server_list.servers, &ping_results);
+        let cache_file = game_dir.join("auth_cache.json");
+        let auth_account = auth::try_restore_cached(&cache_file);
+        let username = auth_account.as_ref()
+            .map(|a| a.username.clone())
+            .unwrap_or_else(|| "Steve".into());
         Self {
-            username: "Steve".into(),
+            username,
             screen: Screen::Main,
             server_list,
             selected_server: None,
@@ -127,6 +148,9 @@ impl MainMenu {
             cursor_blink: Instant::now(),
             last_click_time: Instant::now(),
             last_click_index: None,
+            auth_status: Arc::new(Mutex::new(AuthStatus::Idle)),
+            auth_account,
+            cache_file,
         }
     }
 
@@ -149,6 +173,8 @@ impl MainMenu {
     ) -> MainMenuResult {
         match self.screen {
             Screen::Main => self.build_main(screen_w, screen_h, input, text_width_fn),
+            Screen::AuthPrompt { .. } => self.build_auth_prompt(screen_w, screen_h, input, &text_width_fn),
+            Screen::Auth { .. } => self.build_auth(screen_w, screen_h, input, &text_width_fn),
             Screen::ServerList => self.build_server_list(screen_w, screen_h, input, &text_width_fn),
             Screen::ConfirmDelete(_) => self.build_confirm_delete(screen_w, screen_h, input, &text_width_fn),
             Screen::DirectConnect => self.build_direct_connect(screen_w, screen_h, input, &text_width_fn),
@@ -248,10 +274,24 @@ impl MainMenu {
                 color: if hovered { text_hover } else { text_normal }, centered: false,
             });
 
-            if clicked && hovered && def.id == 1 {
-                self.screen = Screen::ServerList;
-                self.scroll_offset = 0.0;
-                self.selected_server = None;
+            if clicked && hovered {
+                if self.auth_account.is_some() {
+                    match def.id {
+                        0 => {}
+                        1 => {
+                            self.screen = Screen::ServerList;
+                            self.scroll_offset = 0.0;
+                            self.selected_server = None;
+                        }
+                        _ => {}
+                    }
+                } else {
+                    let pending = match def.id {
+                        0 => AuthPending::Singleplayer,
+                        _ => AuthPending::Multiplayer,
+                    };
+                    self.screen = Screen::AuthPrompt { pending };
+                }
             }
         }
 
@@ -287,7 +327,11 @@ impl MainMenu {
 
             if clicked && hovered {
                 match icon {
-                    ICON_USER => {}
+                    ICON_USER => {
+                        if self.auth_account.is_none() {
+                            self.screen = Screen::AuthPrompt { pending: AuthPending::None };
+                        }
+                    }
                     ICON_LINK => {
                         self.links_open = !self.links_open;
                         if self.links_open { self.theme_open = false; }
@@ -401,6 +445,226 @@ impl MainMenu {
         }
 
         MainMenuResult { elements, action, cursor_pointer: any_hovered, blur: 1.0 }
+    }
+
+    pub fn auth_account(&self) -> Option<&AuthAccount> {
+        self.auth_account.as_ref()
+    }
+
+    fn build_auth_prompt(
+        &mut self,
+        screen_w: f32,
+        screen_h: f32,
+        input: &MenuInput,
+        _text_width_fn: &dyn Fn(&str, f32) -> f32,
+    ) -> MainMenuResult {
+        let Screen::AuthPrompt { pending } = self.screen else {
+            return empty_result(2.0);
+        };
+
+        if input.escape {
+            self.screen = Screen::Main;
+            return empty_result(2.0);
+        }
+
+        let gs = (screen_h / 400.0).max(1.0);
+        let title_size = 18.0 * gs;
+        let body_size = 10.0 * gs;
+        let btn_w = 180.0 * gs;
+        let btn_h = 30.0 * gs;
+        let gap = 10.0 * gs;
+        let cx = screen_w / 2.0;
+        let dim: [f32; 4] = [0.7, 0.7, 0.7, 0.8];
+
+        let lines = [
+            "You need to sign in with your Microsoft account.",
+            "",
+            "A browser tab will open where you can sign in.",
+            "Once complete, the client will detect it automatically.",
+            "",
+            "In the future, a launcher will handle authentication.",
+            "For now, we use a temporary sign-in method.",
+        ];
+
+        let text_h = lines.len() as f32 * (body_size + 3.0 * gs);
+        let total_h = title_size + gap * 2.0 + text_h + gap * 2.0 + btn_h + gap + btn_h;
+        let mut y = (screen_h - total_h) / 2.0;
+
+        let mut elements = Vec::new();
+        let mut any_hovered = false;
+
+        elements.push(MenuElement::Text {
+            x: cx, y, text: "Sign In Required".into(),
+            scale: title_size, color: WHITE, centered: true,
+        });
+        y += title_size + gap * 2.0;
+
+        for line in &lines {
+            if !line.is_empty() {
+                elements.push(MenuElement::Text {
+                    x: cx, y, text: (*line).into(),
+                    scale: body_size, color: dim, centered: true,
+                });
+            }
+            y += body_size + 3.0 * gs;
+        }
+        y += gap;
+
+        if push_button(
+            &mut elements, &mut any_hovered,
+            input.cursor, cx - btn_w / 2.0, y, btn_w, btn_h,
+            gs, "Sign in with Microsoft", true,
+        ) && input.clicked {
+            self.screen = Screen::Auth { pending };
+            auth::spawn_auth(&self.rt, Arc::clone(&self.auth_status), self.cache_file.clone());
+        }
+        y += btn_h + gap;
+
+        if push_button(
+            &mut elements, &mut any_hovered,
+            input.cursor, cx - btn_w / 2.0, y, btn_w, btn_h,
+            gs, "Back", true,
+        ) && input.clicked {
+            self.screen = Screen::Main;
+        }
+
+        MainMenuResult { elements, action: MenuAction::None, cursor_pointer: any_hovered, blur: 2.0 }
+    }
+
+    fn cancel_auth(&mut self) {
+        self.screen = Screen::Main;
+        *self.auth_status.lock() = AuthStatus::Idle;
+    }
+
+    fn build_auth(
+        &mut self,
+        screen_w: f32,
+        screen_h: f32,
+        input: &MenuInput,
+        _text_width_fn: &dyn Fn(&str, f32) -> f32,
+    ) -> MainMenuResult {
+        let Screen::Auth { pending } = self.screen else {
+            return empty_result(2.0);
+        };
+
+        let gs = (screen_h / 400.0).max(1.0);
+        let title_size = 18.0 * gs;
+        let body_size = 11.0 * gs;
+        let btn_w = 160.0 * gs;
+        let btn_h = 30.0 * gs;
+        let gap = 12.0 * gs;
+        let cx = screen_w / 2.0;
+        let status_color: [f32; 4] = [0.8, 0.8, 0.8, 0.9];
+
+        let mut elements = Vec::new();
+        let mut any_hovered = false;
+
+        let status = self.auth_status.lock();
+        match &*status {
+            AuthStatus::Idle | AuthStatus::OpeningBrowser => {
+                elements.push(MenuElement::Text {
+                    x: cx, y: (screen_h - body_size) / 2.0,
+                    text: "Opening browser...".into(),
+                    scale: body_size, color: status_color, centered: true,
+                });
+            }
+            AuthStatus::WaitingForBrowser => {
+                drop(status);
+
+                let total_h = title_size + gap + body_size + gap * 2.0 + btn_h;
+                let mut y = (screen_h - total_h) / 2.0;
+
+                elements.push(MenuElement::Text {
+                    x: cx, y, text: "Sign in with Microsoft".into(),
+                    scale: title_size, color: WHITE, centered: true,
+                });
+                y += title_size + gap;
+
+                elements.push(MenuElement::Text {
+                    x: cx, y, text: "Complete sign-in in your browser...".into(),
+                    scale: body_size, color: status_color, centered: true,
+                });
+                y += body_size + gap * 2.0;
+
+                if push_button(
+                    &mut elements, &mut any_hovered,
+                    input.cursor, cx - btn_w / 2.0, y, btn_w, btn_h,
+                    gs, "Cancel", true,
+                ) && input.clicked {
+                    self.cancel_auth();
+                    return empty_result(2.0);
+                }
+
+                return MainMenuResult { elements, action: MenuAction::None, cursor_pointer: any_hovered, blur: 2.0 };
+            }
+            AuthStatus::Exchanging => {
+                elements.push(MenuElement::Text {
+                    x: cx, y: (screen_h - body_size) / 2.0,
+                    text: "Logging in...".into(),
+                    scale: body_size, color: status_color, centered: true,
+                });
+            }
+            AuthStatus::Success(_) => {
+                drop(status);
+                let old = std::mem::replace(&mut *self.auth_status.lock(), AuthStatus::Idle);
+                if let AuthStatus::Success(account) = old {
+                    self.username = account.username.clone();
+                    self.auth_account = Some(account);
+                }
+
+                match pending {
+                    AuthPending::None | AuthPending::Singleplayer => self.screen = Screen::Main,
+                    AuthPending::Multiplayer => {
+                        self.screen = Screen::ServerList;
+                        self.scroll_offset = 0.0;
+                        self.selected_server = None;
+                    }
+                }
+                return empty_result(2.0);
+            }
+            AuthStatus::Failed(err) => {
+                let err = err.clone();
+                drop(status);
+
+                let total_h = title_size + gap + body_size + gap * 2.0 + btn_h;
+                let mut y = (screen_h - total_h) / 2.0;
+
+                elements.push(MenuElement::Text {
+                    x: cx, y, text: "Authentication Failed".into(),
+                    scale: title_size, color: [1.0, 0.4, 0.4, 1.0], centered: true,
+                });
+                y += title_size + gap;
+
+                elements.push(MenuElement::Text {
+                    x: cx, y, text: err,
+                    scale: body_size, color: [0.85, 0.85, 0.85, 0.9], centered: true,
+                });
+                y += body_size + gap * 2.0;
+
+                if push_button(
+                    &mut elements, &mut any_hovered,
+                    input.cursor, cx - btn_w / 2.0, y, btn_w, btn_h,
+                    gs, "Back", true,
+                ) && input.clicked {
+                    self.cancel_auth();
+                    return empty_result(2.0);
+                }
+
+                return MainMenuResult { elements, action: MenuAction::None, cursor_pointer: any_hovered, blur: 2.0 };
+            }
+        }
+        drop(status);
+
+        let btn_y = screen_h / 2.0 + gap * 2.0;
+        if push_button(
+            &mut elements, &mut any_hovered,
+            input.cursor, cx - btn_w / 2.0, btn_y, btn_w, btn_h,
+            gs, "Cancel", true,
+        ) && input.clicked {
+            self.cancel_auth();
+        }
+
+        MainMenuResult { elements, action: MenuAction::None, cursor_pointer: any_hovered, blur: 2.0 }
     }
 
     fn build_server_list(

@@ -1,4 +1,5 @@
 use azalea_core::position::ChunkPos;
+use azalea_core::registry_holder::RegistryHolder;
 use azalea_protocol::packets::game::{ClientboundGamePacket, ServerboundGamePacket};
 use crossbeam_channel::Sender;
 
@@ -9,8 +10,17 @@ pub fn handle_game_packet(
     packet: &ClientboundGamePacket,
     sender: &PacketSender,
     event_tx: &Sender<NetworkEvent>,
+    registry_holder: &RegistryHolder,
 ) {
     match packet {
+        ClientboundGamePacket::Login(p) => {
+            if let Some((_, dim)) = p.common.dimension_type(registry_holder) {
+                let _ = event_tx.try_send(NetworkEvent::DimensionInfo {
+                    height: dim.height,
+                    min_y: dim.min_y,
+                });
+            }
+        }
         ClientboundGamePacket::LevelChunkWithLight(p) => {
             log::debug!(
                 "Chunk [{}, {}] ({} block entities)",
@@ -108,6 +118,12 @@ pub fn handle_game_packet(
         }
         ClientboundGamePacket::BlockChangedAck(p) => {
             let _ = event_tx.try_send(NetworkEvent::BlockChangedAck { seq: p.seq });
+        }
+        ClientboundGamePacket::SetTime(p) => {
+            let _ = event_tx.try_send(NetworkEvent::TimeUpdate {
+                game_time: p.game_time,
+                day_time: p.day_time,
+            });
         }
         ClientboundGamePacket::Disconnect(p) => {
             log::warn!("Disconnected: {}", p.reason);

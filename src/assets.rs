@@ -19,6 +19,7 @@ pub fn resolve_asset_path(assets_dir: &Path, asset_index: &Option<AssetIndex>, a
     assets_dir.join("assets").join(asset_key)
 }
 
+#[derive(Clone)]
 pub struct AssetIndex {
     objects_dir: PathBuf,
     hashes: HashMap<String, String>,

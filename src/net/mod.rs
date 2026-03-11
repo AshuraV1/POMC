@@ -11,6 +11,10 @@ use azalea_world::heightmap::HeightmapKind;
 
 pub enum NetworkEvent {
     Connected,
+    DimensionInfo {
+        height: u32,
+        min_y: i32,
+    },
     ChunkLoaded {
         pos: ChunkPos,
         data: Arc<Box<[u8]>>,
@@ -54,6 +58,10 @@ pub enum NetworkEvent {
     },
     SectionBlocksUpdate {
         updates: Vec<(BlockPos, BlockState)>,
+    },
+    TimeUpdate {
+        game_time: u64,
+        day_time: u64,
     },
     Disconnected {
         reason: String,

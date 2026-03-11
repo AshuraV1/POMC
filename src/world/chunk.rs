@@ -24,8 +24,12 @@ pub struct ChunkStore {
 
 impl ChunkStore {
     pub fn new(view_distance: u32) -> Self {
+        Self::new_with_dimension(view_distance, OVERWORLD_HEIGHT, OVERWORLD_MIN_Y)
+    }
+
+    pub fn new_with_dimension(view_distance: u32, height: u32, min_y: i32) -> Self {
         Self {
-            chunk_storage: ChunkStorage::new(OVERWORLD_HEIGHT, OVERWORLD_MIN_Y),
+            chunk_storage: ChunkStorage::new(height, min_y),
             partial_storage: PartialChunkStorage::new(view_distance),
         }
     }
@@ -63,7 +67,7 @@ impl ChunkStore {
             y,
             z: z.rem_euclid(16) as u8,
         };
-        chunk.set_block_state(&block_pos, state, OVERWORLD_MIN_Y);
+        chunk.set_block_state(&block_pos, state, self.chunk_storage.min_y);
     }
 
     pub fn get_block_state(&self, x: i32, y: i32, z: i32) -> BlockState {
@@ -72,15 +76,15 @@ impl ChunkStore {
             return BlockState::AIR;
         };
         let chunk = chunk_lock.read();
-        block_state_from_section(&chunk, x, y, z, OVERWORLD_MIN_Y)
+        block_state_from_section(&chunk, x, y, z, self.chunk_storage.min_y)
     }
 
     pub fn height(&self) -> u32 {
-        OVERWORLD_HEIGHT
+        self.chunk_storage.height
     }
 
     pub fn min_y(&self) -> i32 {
-        OVERWORLD_MIN_Y
+        self.chunk_storage.min_y
     }
 }
 

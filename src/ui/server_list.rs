@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -94,14 +93,19 @@ async fn ping_server(address: String, results: PingResults) {
     use azalea_protocol::packets::{ClientIntention, PROTOCOL_VERSION};
 
     let result = async {
-        let addr = resolve_address(&address)?;
+        use azalea_protocol::address::ServerAddr;
+
+        let server_addr: ServerAddr = address.as_str().try_into()
+            .map_err(|_| format!("Invalid address: {address}"))?;
+        let addr = azalea_protocol::resolve::resolve_address(&server_addr).await
+            .map_err(|e| format!("{address}: {e}"))?;
         let mut conn: Connection<_, _> = Connection::new(&addr).await
             .map_err(|e| format!("Connection failed: {e}"))?;
 
         conn.write(ServerboundIntention {
             protocol_version: PROTOCOL_VERSION,
-            hostname: addr.ip().to_string(),
-            port: addr.port(),
+            hostname: server_addr.host.clone(),
+            port: server_addr.port,
             intention: ClientIntention::Status,
         })
         .await
@@ -161,21 +165,11 @@ fn with_default_port(address: &str) -> String {
     }
 }
 
-fn resolve_address(server: &str) -> Result<SocketAddr, String> {
-    use std::net::ToSocketAddrs;
-
-    let addr = with_default_port(server);
-    addr.to_socket_addrs()
-        .map_err(|e| format!("{addr}: {e}"))?
-        .next()
-        .ok_or_else(|| format!("{addr}: no addresses found"))
-}
-
 pub fn is_valid_address(address: &str) -> bool {
     if address.is_empty() {
         return false;
     }
     let with_port = with_default_port(address);
-    with_port.parse::<SocketAddr>().is_ok()
+    with_port.parse::<std::net::SocketAddr>().is_ok()
         || with_port.split(':').next().is_some_and(|host| !host.is_empty())
 }

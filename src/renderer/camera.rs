@@ -34,6 +34,10 @@ impl Camera {
         }
     }
 
+    pub fn aspect_ratio(&self) -> f32 {
+        self.aspect_ratio
+    }
+
     pub fn set_aspect_ratio(&mut self, aspect: f32) {
         self.aspect_ratio = aspect;
     }

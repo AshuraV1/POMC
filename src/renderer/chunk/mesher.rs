@@ -106,12 +106,12 @@ const FACES: [Face; 6] = [
 
 fn face_texture(textures: &FaceTextures, face_idx: usize) -> &str {
     match face_idx {
-        0 => textures.top,
-        1 => textures.bottom,
-        2 => textures.north,
-        3 => textures.south,
-        4 => textures.east,
-        _ => textures.west,
+        0 => &textures.top,
+        1 => &textures.bottom,
+        2 => &textures.north,
+        3 => &textures.south,
+        4 => &textures.east,
+        _ => &textures.west,
     }
 }
 
@@ -266,7 +266,7 @@ fn mesh_chunk_snapshot(
                         let tex_name = face_texture(textures, i);
                         let region = uv_map.get_region(tex_name);
 
-                        if let Some(overlay) = textures.side_overlay.filter(|_| is_side(i)) {
+                        if let Some(overlay) = textures.side_overlay.as_deref().filter(|_| is_side(i)) {
                             emit_face(&mut vertices, &mut indices, block_pos, face, region, WHITE);
                             let overlay_region = uv_map.get_region(overlay);
                             emit_face(&mut vertices, &mut indices, block_pos, face, overlay_region, tint);

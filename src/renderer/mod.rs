@@ -29,6 +29,7 @@ use pipelines::chunk::ChunkPipeline;
 use pipelines::hand::HandPipeline;
 use pipelines::menu_overlay::{MenuElement, MenuOverlayPipeline};
 use pipelines::panorama::PanoramaPipeline;
+pub use pipelines::sky::{SkyPipeline, SkyState};
 use swapchain::SwapchainState;
 
 use crate::assets::AssetIndex;
@@ -49,6 +50,7 @@ enum RenderMode {
         overlay: Vec<MenuElement>,
         swing_progress: f32,
         destroy_info: Option<(BlockPos, u32)>,
+        sky: SkyState,
     },
     MainMenu { scroll: f32, blur: f32, elements: Vec<MenuElement> },
 }
@@ -62,6 +64,7 @@ pub struct Renderer {
     chunk_pipeline: ChunkPipeline,
     hand_pipeline: HandPipeline,
     block_overlay_pipeline: BlockOverlayPipeline,
+    sky_pipeline: SkyPipeline,
     panorama_pipeline: PanoramaPipeline,
     menu_pipeline: MenuOverlayPipeline,
     chunk_buffers: ChunkBufferStore,
@@ -75,8 +78,18 @@ impl Renderer {
         window: Arc<Window>,
         assets_dir: &Path,
         asset_index: &Option<AssetIndex>,
+        game_dir: &Path,
     ) -> Result<Self, RendererError> {
         let size = window.inner_size();
+
+        // Parse block models on a background thread while Vulkan initializes
+        let registry_handle = {
+            let assets_dir = assets_dir.to_path_buf();
+            let asset_index = asset_index.clone();
+            let game_dir = game_dir.to_path_buf();
+            std::thread::spawn(move || BlockRegistry::load(&assets_dir, &asset_index, &game_dir))
+        };
+
         let ctx = VulkanContext::new(&window)?;
 
         let swapchain_state = SwapchainState::new(
@@ -93,7 +106,7 @@ impl Renderer {
         )?;
 
         let camera = Camera::new(swapchain_state.aspect_ratio());
-        let registry = BlockRegistry::new();
+        let registry = registry_handle.join().expect("block registry thread panicked");
 
         let texture_names: HashSet<&str> = registry.texture_names().collect();
         let atlas = TextureAtlas::build(
@@ -124,6 +137,16 @@ impl Renderer {
         );
 
         let block_overlay_pipeline = BlockOverlayPipeline::new(
+            &ctx.device,
+            ctx.graphics_queue,
+            ctx.command_pool,
+            swapchain_state.render_pass,
+            &ctx.allocator,
+            assets_dir,
+            asset_index,
+        );
+
+        let sky_pipeline = SkyPipeline::new(
             &ctx.device,
             ctx.graphics_queue,
             ctx.command_pool,
@@ -164,6 +187,7 @@ impl Renderer {
             chunk_pipeline,
             hand_pipeline,
             block_overlay_pipeline,
+            sky_pipeline,
             panorama_pipeline,
             menu_pipeline,
             chunk_buffers,
@@ -216,6 +240,7 @@ impl Renderer {
 
         self.hand_pipeline.recreate_pipeline(&self.ctx.device, self.swapchain.render_pass);
         self.block_overlay_pipeline.recreate_pipeline(&self.ctx.device, self.swapchain.render_pass);
+        self.sky_pipeline.recreate_pipeline(&self.ctx.device, self.swapchain.render_pass);
         self.panorama_pipeline.recreate_pipeline(&self.ctx.device, self.swapchain.render_pass);
         self.menu_pipeline.recreate_pipeline(&self.ctx.device, self.swapchain.render_pass);
 
@@ -280,12 +305,13 @@ impl Renderer {
         overlay: Vec<MenuElement>,
         swing_progress: f32,
         destroy_info: Option<(BlockPos, u32)>,
+        sky: SkyState,
     ) -> Result<(), RendererError> {
         self.render_frame(
             window,
             hide_cursor,
-            [0.529, 0.808, 0.922, 1.0],
-            RenderMode::World { overlay, swing_progress, destroy_info },
+            [0.0, 0.0, 0.0, 1.0],
+            RenderMode::World { overlay, swing_progress, destroy_info, sky },
         )
     }
 
@@ -423,7 +449,11 @@ impl Renderer {
             let sh = self.swapchain.extent.height as f32;
 
             match &mode {
-                RenderMode::World { overlay, swing_progress, destroy_info } => {
+                RenderMode::World { overlay, swing_progress, destroy_info, sky } => {
+                    self.sky_pipeline.update_and_draw(
+                        &self.ctx.device, cmd, frame, &self.camera, sky,
+                    );
+
                     self.chunk_pipeline.bind(&self.ctx.device, cmd, frame);
                     self.chunk_buffers.draw(&self.ctx.device, cmd);
 
@@ -525,6 +555,8 @@ impl Drop for Renderer {
         self.hand_pipeline
             .destroy(&self.ctx.device, &self.ctx.allocator);
         self.block_overlay_pipeline
+            .destroy(&self.ctx.device, &self.ctx.allocator);
+        self.sky_pipeline
             .destroy(&self.ctx.device, &self.ctx.allocator);
         self.panorama_pipeline
             .destroy(&self.ctx.device, &self.ctx.allocator);

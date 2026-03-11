@@ -72,6 +72,7 @@ struct App {
     chat: ChatState,
     panorama_scroll: f32,
     interaction: InteractionState,
+    sky_state: crate::renderer::SkyState,
     show_debug: bool,
     fps_counter: FpsCounter,
 }
@@ -144,6 +145,7 @@ impl App {
             chat: ChatState::new(),
             panorama_scroll: 0.0,
             interaction: InteractionState::new(),
+            sky_state: crate::renderer::SkyState::default_day(),
             show_debug: false,
             fps_counter: FpsCounter::new(),
         }
@@ -167,11 +169,15 @@ impl App {
     }
 
     fn connect_to_server(&mut self, server: String, username: String) {
+        let (uuid, access_token) = match self.menu.auth_account() {
+            Some(account) => (account.uuid, Some(account.access_token.clone())),
+            None => (uuid::Uuid::nil(), None),
+        };
         let connect_args = crate::net::connection::ConnectArgs {
             server,
             username,
-            uuid: uuid::Uuid::nil(),
-            access_token: None,
+            uuid,
+            access_token,
         };
 
         let handle = crate::net::connection::spawn_connection(&self.tokio_rt, connect_args);
@@ -217,6 +223,13 @@ impl App {
                     log::info!("Connected to server");
                     self.state = GameState::InGame;
                     self.apply_cursor_grab();
+                }
+                NetworkEvent::DimensionInfo { height, min_y } => {
+                    log::info!("Dimension: height={height}, min_y={min_y}");
+                    self.chunk_store = ChunkStore::new_with_dimension(VIEW_DISTANCE, height, min_y);
+                    if let Some(renderer) = &mut self.renderer {
+                        renderer.clear_chunk_meshes();
+                    }
                 }
                 NetworkEvent::ChunkLoaded {
                     pos,
@@ -297,6 +310,10 @@ impl App {
                 NetworkEvent::BlockChangedAck { seq } => {
                     self.interaction.acknowledge(seq);
                 }
+                NetworkEvent::TimeUpdate { game_time, day_time } => {
+                    self.sky_state.game_time = game_time;
+                    self.sky_state.day_time = day_time;
+                }
                 NetworkEvent::Disconnected { reason } => {
                     log::warn!("Disconnected: {reason}");
                     disconnect_reason = Some(reason);
@@ -366,7 +383,7 @@ impl ApplicationHandler for App {
             }
         };
 
-        let renderer = match Renderer::new(Arc::clone(&window), &self.assets_dir, &self.asset_index) {
+        let renderer = match Renderer::new(Arc::clone(&window), &self.assets_dir, &self.asset_index, &self.game_dir) {
             Ok(r) => r,
             Err(e) => {
                 log::error!("Failed to create renderer: {e}");
@@ -699,9 +716,14 @@ impl ApplicationHandler for App {
                             );
                             let destroy_info = self.interaction.destroy_stage();
 
+                            let sky = crate::renderer::SkyState {
+                                day_time: self.sky_state.day_time,
+                                game_time: self.sky_state.game_time,
+                                rain_level: self.sky_state.rain_level,
+                            };
                             if let Err(e) = renderer.render_world(
                                 window, hide_cursor, elements,
-                                swing_progress, destroy_info,
+                                swing_progress, destroy_info, sky,
                             ) {
                                 log::error!("Render error: {e}");
                             }

@@ -1,5 +1,4 @@
-use std::net::SocketAddr;
-
+use azalea_protocol::address::ServerAddr;
 use azalea_protocol::connect::{Connection, ReadConnection, WriteConnection};
 use azalea_protocol::packets::config::{ClientboundConfigPacket, ServerboundConfigPacket};
 use azalea_protocol::packets::game::{ClientboundGamePacket, ServerboundGamePacket};
@@ -85,15 +84,18 @@ pub async fn connect_to_server(
     game_packet_tx: mpsc::UnboundedSender<ServerboundGamePacket>,
     game_packet_rx: mpsc::UnboundedReceiver<ServerboundGamePacket>,
 ) -> Result<(), ConnectionError> {
-    let addr = resolve_address(&args.server)?;
-    log::info!("Connecting to {addr}...");
+    let server_addr: ServerAddr = args.server.as_str().try_into()
+        .map_err(|_| ConnectionError::InvalidAddress(args.server.clone()))?;
+    let addr = azalea_protocol::resolve::resolve_address(&server_addr).await
+        .map_err(|e| ConnectionError::InvalidAddress(format!("{}: {e}", args.server)))?;
+    log::info!("Connecting to {} (resolved: {addr})...", args.server);
 
     let mut conn: Connection<_, _> = Connection::new(&addr).await?;
 
     conn.write(ServerboundIntention {
         protocol_version: PROTOCOL_VERSION,
-        hostname: args.server.clone(),
-        port: addr.port(),
+        hostname: server_addr.host.clone(),
+        port: server_addr.port,
         intention: ClientIntention::Login,
     })
     .await?;
@@ -114,13 +116,13 @@ pub async fn connect_to_server(
     let mut conn = conn.config();
 
     log::info!("Entering configuration phase");
-    config_sequence(&mut conn).await?;
+    let registry_holder = config_sequence(&mut conn).await?;
 
     let conn = conn.game();
     log::info!("Entering game state");
     let _ = event_tx.try_send(NetworkEvent::Connected);
 
-    game_loop(conn, &event_tx, chat_rx, game_packet_tx, game_packet_rx).await
+    game_loop(conn, &event_tx, chat_rx, game_packet_tx, game_packet_rx, registry_holder).await
 }
 
 async fn login_sequence(
@@ -129,6 +131,7 @@ async fn login_sequence(
 ) -> Result<(), ConnectionError> {
     loop {
         let packet: ClientboundLoginPacket = conn.read().await?;
+        log::info!("Login packet: {:?}", std::mem::discriminant(&packet));
         match packet {
             ClientboundLoginPacket::Hello(p) => {
                 handle_encryption(conn, &p, args).await?;
@@ -182,11 +185,15 @@ async fn handle_encryption(
             )
         })?;
 
+        log::info!("Authenticating with session server (uuid: {})", args.uuid);
         conn.authenticate(access_token, &args.uuid, e.secret_key, hello, None)
             .await
             .map_err(|e: azalea_auth::sessionserver::ClientSessionServerError| {
                 ConnectionError::Auth(e.to_string())
             })?;
+        log::info!("Session server authentication successful");
+    } else {
+        log::info!("Server does not require authentication");
     }
 
     conn.write(ServerboundKey {
@@ -202,10 +209,13 @@ async fn handle_encryption(
 
 async fn config_sequence(
     conn: &mut Connection<ClientboundConfigPacket, ServerboundConfigPacket>,
-) -> Result<(), ConnectionError> {
+) -> Result<azalea_core::registry_holder::RegistryHolder, ConnectionError> {
+    use azalea_core::registry_holder::RegistryHolder;
     use azalea_entity::HumanoidArm;
     use azalea_protocol::common::client_information::*;
     use azalea_protocol::packets::config::*;
+
+    let mut registry_holder = RegistryHolder::default();
 
     conn.write(ServerboundConfigPacket::ClientInformation(
         s_client_information::ServerboundClientInformation {
@@ -235,8 +245,8 @@ async fn config_sequence(
     loop {
         let packet: ClientboundConfigPacket = conn.read().await?;
         match packet {
-            ClientboundConfigPacket::RegistryData(_) => {
-                log::debug!("Received registry data");
+            ClientboundConfigPacket::RegistryData(p) => {
+                registry_holder.append(p.registry_id, p.entries);
             }
             ClientboundConfigPacket::UpdateTags(_) => {
                 log::debug!("Received tags");
@@ -260,7 +270,7 @@ async fn config_sequence(
                     s_finish_configuration::ServerboundFinishConfiguration {},
                 ))
                 .await?;
-                return Ok(());
+                return Ok(registry_holder);
             }
             ClientboundConfigPacket::Disconnect(p) => {
                 return Err(ConnectionError::Disconnected(format!("{}", p.reason)));
@@ -287,6 +297,7 @@ async fn game_loop(
     chat_rx: crossbeam_channel::Receiver<String>,
     outbound_tx: mpsc::UnboundedSender<ServerboundGamePacket>,
     mut outbound_rx: mpsc::UnboundedReceiver<ServerboundGamePacket>,
+    registry_holder: azalea_core::registry_holder::RegistryHolder,
 ) -> Result<(), ConnectionError> {
     let (mut reader, mut writer): (
         ReadConnection<ClientboundGamePacket>,
@@ -336,24 +347,10 @@ async fn game_loop(
 
     loop {
         let packet: ClientboundGamePacket = reader.read().await?;
-        handle_game_packet(&packet, &sender, event_tx);
+        handle_game_packet(&packet, &sender, event_tx, &registry_holder);
     }
 }
 
-fn resolve_address(server: &str) -> Result<SocketAddr, ConnectionError> {
-    use std::net::ToSocketAddrs;
-
-    let addr = if server.contains(':') {
-        server.to_string()
-    } else {
-        format!("{server}:25565")
-    };
-
-    addr.to_socket_addrs()
-        .map_err(|e| ConnectionError::InvalidAddress(format!("{addr}: {e}")))?
-        .next()
-        .ok_or_else(|| ConnectionError::InvalidAddress(format!("{addr}: no addresses found")))
-}
 
 fn friendly_error_reason(err: &ConnectionError) -> String {
     let msg = err.to_string();
