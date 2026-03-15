@@ -26,6 +26,7 @@ use chunk::mesher::{ChunkMeshData, MeshDispatcher};
 use context::VulkanContext;
 use pipelines::block_overlay::BlockOverlayPipeline;
 use pipelines::chunk::ChunkPipeline;
+use pipelines::cull::CullPipeline;
 use pipelines::hand::HandPipeline;
 use pipelines::menu_overlay::{MenuElement, MenuOverlayPipeline};
 use pipelines::panorama::PanoramaPipeline;
@@ -66,6 +67,7 @@ pub struct Renderer {
     registry: BlockRegistry,
     atlas: TextureAtlas,
     chunk_pipeline: ChunkPipeline,
+    cull_pipeline: CullPipeline,
     hand_pipeline: HandPipeline,
     block_overlay_pipeline: BlockOverlayPipeline,
     sky_pipeline: SkyPipeline,
@@ -182,7 +184,9 @@ impl Renderer {
             asset_index,
         );
 
-        let chunk_buffers = ChunkBufferStore::new();
+        let cull_pipeline = CullPipeline::new(&ctx.device, &ctx.allocator);
+
+        let chunk_buffers = ChunkBufferStore::new(&ctx.device, &ctx.allocator);
 
         Ok(Self {
             ctx,
@@ -191,6 +195,7 @@ impl Renderer {
             registry,
             atlas,
             chunk_pipeline,
+            cull_pipeline,
             hand_pipeline,
             block_overlay_pipeline,
             sky_pipeline,
@@ -307,19 +312,16 @@ impl Renderer {
     }
 
     pub fn upload_chunk_mesh(&mut self, mesh: &ChunkMeshData) {
-        self.chunk_buffers
-            .upload(&self.ctx.device, &self.ctx.allocator, mesh);
+        self.chunk_buffers.upload(mesh);
     }
 
     pub fn remove_chunk_mesh(&mut self, pos: &ChunkPos) {
-        self.chunk_buffers
-            .remove(&self.ctx.device, &self.ctx.allocator, pos);
+        self.chunk_buffers.remove(pos);
     }
 
     pub fn clear_chunk_meshes(&mut self) {
         self.wait_for_all_frames();
-        self.chunk_buffers
-            .clear(&self.ctx.device, &self.ctx.allocator);
+        self.chunk_buffers.clear();
     }
 
     pub fn create_mesh_dispatcher(&self) -> MeshDispatcher {
@@ -443,6 +445,19 @@ impl Renderer {
                 .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
             self.ctx.device.begin_command_buffer(cmd, &begin_info)?;
 
+            let draw_count = if matches!(mode, RenderMode::World { .. }) {
+                let frustum = self.camera.frustum_planes();
+                self.cull_pipeline.upload_and_dispatch(
+                    &self.ctx.device,
+                    cmd,
+                    frame,
+                    &frustum,
+                    &self.chunk_buffers,
+                )
+            } else {
+                0
+            };
+
             let clear_values = [
                 vk::ClearValue {
                     color: vk::ClearColorValue {
@@ -506,8 +521,28 @@ impl Renderer {
                         sky,
                     );
 
-                    self.chunk_pipeline.bind(&self.ctx.device, cmd, frame);
-                    self.chunk_buffers.draw(&self.ctx.device, cmd);
+                    if draw_count > 0 {
+                        self.chunk_pipeline.bind(&self.ctx.device, cmd, frame);
+                        self.ctx.device.cmd_bind_vertex_buffers(
+                            cmd,
+                            0,
+                            &[self.chunk_buffers.vertex_buffer()],
+                            &[0],
+                        );
+                        self.ctx.device.cmd_bind_index_buffer(
+                            cmd,
+                            self.chunk_buffers.index_buffer(),
+                            0,
+                            vk::IndexType::UINT32,
+                        );
+                        self.ctx.device.cmd_draw_indexed_indirect(
+                            cmd,
+                            self.cull_pipeline.indirect_buffer(frame),
+                            0,
+                            draw_count,
+                            std::mem::size_of::<chunk::buffer::DrawIndexedIndirectCommand>() as u32,
+                        );
+                    }
 
                     if let Some((block_pos, stage)) = destroy_info {
                         self.block_overlay_pipeline.draw(
@@ -612,8 +647,10 @@ impl Drop for Renderer {
             let _ = self.ctx.device.device_wait_idle();
         }
         self.chunk_buffers
-            .clear(&self.ctx.device, &self.ctx.allocator);
+            .destroy(&self.ctx.device, &self.ctx.allocator);
         self.chunk_pipeline
+            .destroy(&self.ctx.device, &self.ctx.allocator);
+        self.cull_pipeline
             .destroy(&self.ctx.device, &self.ctx.allocator);
         self.hand_pipeline
             .destroy(&self.ctx.device, &self.ctx.allocator);

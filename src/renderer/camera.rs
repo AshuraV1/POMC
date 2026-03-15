@@ -55,6 +55,26 @@ impl Camera {
         self.fov_modifier += (target - self.fov_modifier) * 0.5;
     }
 
+    pub fn frustum_planes(&self) -> [[f32; 4]; 6] {
+        let m = self.view_projection();
+        let mt = m.transpose();
+        let r0 = mt.x_axis;
+        let r1 = mt.y_axis;
+        let r2 = mt.z_axis;
+        let r3 = mt.w_axis;
+
+        let raw = [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r3 + r2, r3 - r2];
+
+        let mut planes = [[0.0f32; 4]; 6];
+        for (i, v) in raw.iter().enumerate() {
+            let len = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
+            if len > 0.0 {
+                planes[i] = [v.x / len, v.y / len, v.z / len, v.w / len];
+            }
+        }
+        planes
+    }
+
     pub fn view_projection(&self) -> Mat4 {
         let forward = Vec3::new(
             -self.yaw.sin() * self.pitch.cos(),
