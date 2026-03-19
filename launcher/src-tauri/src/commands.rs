@@ -274,29 +274,31 @@ pub async fn launch_game(
 }
 
 fn find_client_binary() -> Result<std::path::PathBuf, String> {
-    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    #[cfg(target_family = "windows")]
+    const EXENAME: &str = "pomc.exe";
+
+    #[cfg(target_family = "unix")]
+    const EXENAME: &str = "pomc";
 
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("pomc.exe"));
-            candidates.push(dir.join("pomc"));
+            let same_dir = dir.join(EXENAME);
+            if same_dir.exists() {
+                return Ok(same_dir);
+            }
 
             let mut ancestor = dir.to_path_buf();
             for _ in 0..6 {
                 if !ancestor.pop() {
                     break;
                 }
-                candidates.push(ancestor.join("target").join("release").join("pomc.exe"));
-                candidates.push(ancestor.join("target").join("debug").join("pomc.exe"));
-                candidates.push(ancestor.join("target").join("release").join("pomc"));
-                candidates.push(ancestor.join("target").join("debug").join("pomc"));
+                for profile in ["release", "debug"] {
+                    let candidate = ancestor.join("target").join(profile).join(EXENAME);
+                    if candidate.exists() {
+                        return Ok(candidate);
+                    }
+                }
             }
-        }
-    }
-
-    for candidate in &candidates {
-        if candidate.exists() {
-            return Ok(candidate.clone());
         }
     }
 
