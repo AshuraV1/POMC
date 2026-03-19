@@ -281,10 +281,10 @@ pub async fn launch_game(
 
 fn find_client_binary() -> Result<std::path::PathBuf, String> {
     #[cfg(target_family = "windows")]
-    const EXENAME : &'static str = "pomc.exe";
+    const EXENAME: &str = "pomc.exe";
 
     #[cfg(target_family = "unix")]
-    const EXENAME : &'static str = "pomc";
+    const EXENAME: &str = "pomc";
 
     let candidates = [
         std::env::current_exe()
