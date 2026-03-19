@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  client:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt -- --check
+
+      - name: Clippy
+        run: cargo clippy --release --all-targets --all-features -- -D warnings
+
+      - name: Build
+        run: cargo build --release
+
+  launcher-backend:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: launcher/src-tauri
+
+      - name: Format check
+        working-directory: launcher/src-tauri
+        run: cargo fmt -- --check
+
+      - name: Clippy
+        working-directory: launcher/src-tauri
+        run: cargo clippy --release --all-targets --all-features -- -D warnings
+
+  launcher-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: launcher/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: launcher
+        run: pnpm install
+
+      - name: Type check
+        working-directory: launcher
+        run: pnpm exec tsc --noEmit
+
+      - name: Build
+        working-directory: launcher
+        run: pnpm exec vite build
