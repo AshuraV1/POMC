@@ -239,12 +239,7 @@ async fn download_jar(
     };
 
     let jar_path = versions_dir().join(format!("{version}.jar"));
-    if !jar_path.exists()
-        || std::fs::metadata(&jar_path)
-            .map(|m| m.len())
-            .unwrap_or(0)
-            != dl.size
-    {
+    if !jar_path.exists() || std::fs::metadata(&jar_path).map(|m| m.len()).unwrap_or(0) != dl.size {
         emit_progress(app, 0, 1, "Downloading client JAR...");
         let bytes = client
             .get(&dl.url)

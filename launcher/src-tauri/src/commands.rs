@@ -110,9 +110,7 @@ struct SkinTexture {
 #[tauri::command]
 pub async fn get_skin_url(uuid: String) -> Result<String, String> {
     let clean_uuid = uuid.replace('-', "");
-    let url = format!(
-        "https://sessionserver.mojang.com/session/minecraft/profile/{clean_uuid}"
-    );
+    let url = format!("https://sessionserver.mojang.com/session/minecraft/profile/{clean_uuid}");
     let profile: SessionProfile = reqwest::get(&url)
         .await
         .map_err(|e| e.to_string())?
@@ -120,18 +118,13 @@ pub async fn get_skin_url(uuid: String) -> Result<String, String> {
         .await
         .map_err(|e| e.to_string())?;
 
-    let value = &profile
-        .properties
-        .first()
-        .ok_or("No properties")?
-        .value;
+    let value = &profile.properties.first().ok_or("No properties")?.value;
 
     use base64::Engine;
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(value)
         .map_err(|e| e.to_string())?;
-    let payload: TexturesPayload =
-        serde_json::from_slice(&decoded).map_err(|e| e.to_string())?;
+    let payload: TexturesPayload = serde_json::from_slice(&decoded).map_err(|e| e.to_string())?;
 
     payload
         .textures
@@ -147,8 +140,7 @@ pub fn get_all_accounts() -> Vec<crate::auth::AuthAccount> {
 
 #[tauri::command]
 pub async fn add_account() -> Result<crate::auth::AuthAccount, String> {
-    let (_, device_code, expires_in, interval) =
-        crate::auth::start_device_code_flow().await?;
+    let (_, device_code, expires_in, interval) = crate::auth::start_device_code_flow().await?;
     crate::auth::poll_for_token(&device_code, expires_in, interval).await
 }
 
@@ -229,16 +221,11 @@ pub async fn ensure_assets(app: tauri::AppHandle, version: String) -> Result<(),
 }
 
 #[tauri::command]
-pub async fn launch_game(
-    uuid: Option<String>,
-    server: Option<String>,
-) -> Result<String, String> {
+pub async fn launch_game(uuid: Option<String>, server: Option<String>) -> Result<String, String> {
     let exe = find_client_binary()?;
     let assets = crate::downloader::assets_dir();
 
-    let account = uuid
-        .as_deref()
-        .and_then(crate::auth::try_restore);
+    let account = uuid.as_deref().and_then(crate::auth::try_restore);
 
     let username = account
         .as_ref()
